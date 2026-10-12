@@ -1,0 +1,1 @@
+"""Daily Steam promotion digest."""

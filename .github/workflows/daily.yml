@@ -1,0 +1,57 @@
+name: Steam 微信晨报
+
+on:
+  schedule:
+    # UTC 01:30 = Asia/Shanghai 09:30. One scan per day.
+    - cron: '30 1 * * *'
+  workflow_dispatch:
+    inputs:
+      preview_only:
+        description: '仅生成预览，不发送微信'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: steam-wechat-daily
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run focused tests
+        run: python -m unittest discover -s tests -v
+      - name: Preview current Steam offers
+        if: github.event_name == 'workflow_dispatch' && inputs.preview_only
+        run: python -m steam_daily
+      - name: Send daily WeChat digest
+        if: github.event_name == 'schedule' || !inputs.preview_only
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          PUSHPLUS_SECRET_KEY: ${{ secrets.PUSHPLUS_SECRET_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python -m steam_daily --send --restore
+      - name: Preserve sending journal even after a failed run
+        if: always() && hashFiles('state/state.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: steam-daily-state-${{ github.run_id }}-${{ github.run_attempt }}
+          path: state/state.json
+          retention-days: 30
+          if-no-files-found: error
+      - name: Save full report and previews
+        if: always() && hashFiles('reports/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: steam-daily-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/
+          retention-days: 7
