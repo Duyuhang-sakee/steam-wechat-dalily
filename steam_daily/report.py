@@ -9,11 +9,8 @@ from urllib.parse import urlsplit
 from .steam import Offer, safe_image_url
 
 BEIJING = timezone(timedelta(hours=8), 'Asia/Shanghai')
+# Preserve the stored mode so existing send receipts still prevent duplicate notifications.
 MODE = 'single-digest-v2'
-
-
-def display_time(epoch):
-    return datetime.fromtimestamp(epoch, BEIJING).strftime('%Y-%m-%d %H:%M') if epoch else '未知'
 
 
 def site_url(value):
@@ -89,57 +86,11 @@ def select_recommendations(discounts, count=5):
     return selected[:count]
 
 
-def row(offer, now):
-    due = ''
-    if offer.free and offer.end_epoch and 0 < offer.end_epoch - now.timestamp() <= 86400:
-        due = ' <strong>【未来24小时内结束】</strong>'
-    name = offer.name if len(offer.name) <= 90 else offer.name[:89] + '…'
-    price = f'{html.escape(offer.original)} → {html.escape(offer.current)} · -{offer.discount}%'
-    detail = ''
-    if offer.free:
-        detail = f'<br>领取截止：{display_time(offer.end_epoch)}'
-        if offer.deadline_note and not offer.end_epoch:
-            detail += f'；商店原文：{html.escape(offer.deadline_note[:200])}（时区未核实）'
-    return (f'<p><a href="{html.escape(offer.url, quote=True)}">{html.escape(name)}</a>{due}<br>'
-            f'{price}{detail}</p>')
-
-
-def build_digest(freebies, discounts, now, config, url, warnings):
+def build_page_notification(now, url=''):
     day = now.astimezone(BEIJING).strftime('%Y-%m-%d')
-    link = site_url(url) + '?day=' + day if url else ''
-    header = (f'<h2>Steam 优惠晨报 · {day}</h2><p>国区 · 限免 {len(freebies)} 项 · '
-              f'折扣≥{config["minimum_discount"]}% 共 {len(discounts)} 项<br>'
-              f'采集于 {now.astimezone(BEIJING):%H:%M}（北京时间）</p>')
-    footer = (f'<hr><p><a href="{html.escape(link, quote=True)}">查看全部优惠与游戏封面 →</a></p>' if link
-              else '<hr><p>本地预览：完整名单见 site/index.html；配置 Pages 后这里显示网页链接。</p>')
-    footer += '<p>每日一条摘要；价格及领取状态以 Steam 商店为准。精选可能包含 DLC、软件或礼包。</p>'
-    if warnings:
-        footer += '<p>部分条目未能核验，详情见完整网页。</p>'
-    blocks = ['<h3>限时永久领取</h3>']
-    remaining = config['message_char_limit'] - len(header) - len(footer)
-    free_rows = [row(item, now) for item in freebies]
-    recommendations = select_recommendations(discounts)
-    featured = '<h3>折扣精选</h3>'
-    for item in recommendations:
-        block = row(item, now)
-        if len(featured + block) > remaining // 2:
-            break
-        featured += block
-    if not recommendations:
-        featured += '<p>暂无符合条件的商品。</p>'
-    for block in free_rows:
-        if sum(map(len, blocks)) + len(block) + len(featured) + 70 > remaining:
-            break
-        blocks.append(block)
-    shown = len(blocks) - 1
-    if shown < len(free_rows):
-        blocks.append(f'<p>另有 {len(free_rows) - shown} 项限免，请查看完整网页。</p>')
-    if not free_rows:
-        blocks.append('<p>本次未核验到有效限免。</p>')
-    content = header + ''.join(blocks) + featured + footer
-    if len(content) > config['message_char_limit']:
-        raise ValueError('Daily summary exceeded message length budget')
-    return content
+    link = (site_url(url) if url else 'site/index.html') + '?day=' + day
+    return (f'<p><a href="{html.escape(link, quote=True)}">'
+            f'Steam 优惠晨报 · {day} · 打开完整优惠页面 →</a></p>')
 
 
 def build_site(snapshot, config):

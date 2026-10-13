@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 from steam_daily.__main__ import run
 from steam_daily.delivery import restore_state, save_json, validate_state
 from steam_daily.http import FetchError
-from steam_daily.report import BEIJING, MODE, build_digest, build_site, select_recommendations, site_url, snapshot_hash
+from steam_daily.report import BEIJING, MODE, build_page_notification, build_site, select_recommendations, site_url, snapshot_hash
 from steam_daily.steam import Offer, parse_search, safe_image_url
 
 
@@ -55,15 +55,11 @@ class ReportTests(unittest.TestCase):
         self.assertEqual([item.key for item in picked], ['app:3', 'app:2', 'app:1', 'app:6', 'app:4'])
         self.assertEqual(len({item.key for item in picked}), 5)
 
-    def test_many_freebies_are_bounded_with_link_to_overflow(self):
-        freebies = [product(i, free=True, discount=100, current='免费', final_cents=0, name='长名称' * 100)
-                    for i in range(100)]
-        config = {**self.config, 'message_char_limit': 2000}
-        content = build_digest(freebies, [product(200)], datetime.now(BEIJING), config, 'https://example.com/', [])
-        self.assertLessEqual(len(content), 2000)
-        self.assertIn('另有', content)
-        self.assertIn('限免 100 项', content)
-        self.assertIn('查看全部优惠', content)
+    def test_preview_link_opens_the_complete_local_site(self):
+        now = datetime.now(BEIJING)
+        content = build_page_notification(now)
+        self.assertIn('href="site/index.html?day=' + now.strftime('%Y-%m-%d') + '"', content)
+        self.assertEqual(content.count('<a '), 1)
 
     def test_observed_covers_and_chinese_review_data_from_real_fixture(self):
         raw = json.loads(Path('tests/fixtures/steam-search-cn.json').read_text(encoding='utf-8'))
@@ -130,7 +126,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(state['snapshot_sha256'], snapshot_hash(saved))
         document = self.root / 'reports/site/index.html'
         self.assertTrue(document.exists())
-        self.assertTrue((self.root / 'reports/wechat-summary.html').exists())
+        self.assertTrue((self.root / 'reports/wechat-notification.html').exists())
         self.assertEqual(json.loads((document.parent / 'manifest.json').read_text())['snapshot_sha256'],
                          state['snapshot_sha256'])
 
@@ -148,6 +144,47 @@ class PipelineTests(unittest.TestCase):
         client.send.assert_called_once()
         self.assertIn('manifest.json?digest=', http.json.call_args.args[0])
         self.assertEqual(json.loads(Path(self.args.state).read_text())['pages'][0]['status'], 'accepted')
+
+    def test_real_send_contains_only_the_published_page_link_and_deduplicates(self):
+        from test_delivery import Server
+        from steam_daily.http import Http
+
+        state = self.prepare()
+        state['pages'][0]['content'] = '<p>OLD DIGEST</p>'
+        save_json(self.args.state, state)
+        requests = []
+
+        def route(method, url, headers, body):
+            if method == 'GET' and url.startswith('/steam/manifest.json?digest='):
+                return 200, {}, self.manifest(state)
+            payload = json.loads(body)
+            requests.append(payload)
+            return 200, {}, {'code': 200, 'data': 'page-link-receipt'}
+
+        with Server(route) as server:
+            http = Http(timeout=1)
+            real_json = http.json
+
+            def local_request(url, payload=None, headers=None, **kwargs):
+                from urllib.parse import urlsplit
+                parts = urlsplit(url)
+                return real_json(server.url + parts.path + ('?' + parts.query if parts.query else ''),
+                                 payload, headers, **kwargs)
+
+            http.json = local_request
+            with patch.dict(os.environ, {'PUSHPLUS_TOKEN': 'DUMMY', 'PUSHPLUS_SECRET_KEY': ''}), \
+                    patch('steam_daily.__main__.Http', return_value=http):
+                run(self.send_args())
+                run(self.send_args())
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0]['template'], 'html')
+        self.assertEqual(requests[0]['channel'], 'wechat')
+        content = requests[0]['content']
+        self.assertEqual(content.count('<a '), 1)
+        self.assertIn(self.args.site_url + '?day=' + state['day'], content)
+        self.assertNotIn('Game 1', content)
+        self.assertNotIn('折扣精选', content)
+        self.assertNotIn('OLD DIGEST', content)
 
     def test_wrong_deployment_or_stale_public_snapshot_never_sends(self):
         self.prepare()
@@ -174,6 +211,29 @@ class PipelineTests(unittest.TestCase):
         save_json(self.root / 'state/offers.json', saved)
         with self.assertRaisesRegex(ValueError, 'does not match'):
             run(self.args)
+
+    def test_old_summary_refreshes_only_unsent_or_confirmed_failed_records(self):
+        for status, attempts, receipt, should_refresh in (
+                ('ready', 0, None, True), ('failed', 1, 'failed-receipt', True),
+                ('accepted', 1, 'receipt', False), ('pending', 1, 'receipt', False),
+                ('delivered', 1, 'receipt', False), ('sending', 1, None, False),
+                ('uncertain', 1, None, False)):
+            with self.subTest(status=status):
+                state = self.prepare()
+                state['pages'][0] = {'title': 'Old daily notification', 'content': '<p>OLD DIGEST</p>',
+                                     'status': status, 'attempts': attempts}
+                if receipt:
+                    state['pages'][0]['receipt'] = receipt
+                save_json(self.args.state, state)
+                with patch('steam_daily.__main__.collect') as collect:
+                    run(self.args)
+                collect.assert_not_called()
+                restored = json.loads(Path(self.args.state).read_text(encoding='utf-8'))
+                page = restored['pages'][0]
+                self.assertEqual('OLD DIGEST' not in page['content'], should_refresh)
+                self.assertEqual((page['status'], page['attempts'], page.get('receipt')),
+                                 (status, attempts, receipt))
+                self.assertEqual(restored['snapshot_sha256'], state['snapshot_sha256'])
 
     def test_legacy_43_pages_are_stopped_after_any_attempt(self):
         state = self.prepare()

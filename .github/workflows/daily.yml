@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       preview_only:
-        description: '仅生成网页和微信摘要预览，不发布、不发送'
+        description: '仅生成网页和微信页面入口预览，不发布、不发送'
         type: boolean
         default: true
 
@@ -44,7 +44,7 @@ jobs:
       - name: Preview current Steam offers
         if: github.event_name == 'workflow_dispatch' && inputs.preview_only
         run: python -m steam_daily
-      - name: Prepare the webpage and one WeChat summary
+      - name: Prepare the webpage and one WeChat page notification
         if: github.event_name == 'schedule' || !inputs.preview_only
         env:
           SITE_URL: ${{ steps.pages.outputs.base_url }}
@@ -59,7 +59,7 @@ jobs:
         id: deployment
         if: github.event_name == 'schedule' || !inputs.preview_only
         uses: actions/deploy-pages@v4
-      - name: Send ONE daily WeChat summary
+      - name: Send ONE daily WeChat page notification
         if: github.event_name == 'schedule' || !inputs.preview_only
         env:
           DEPLOYED_URL: ${{ steps.deployment.outputs.page_url }}

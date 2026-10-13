@@ -5,6 +5,5 @@
   "page_size": 100,
   "max_pages": 300,
   "request_gap_seconds": 3,
-  "message_char_limit": 18000,
   "send_gap_seconds": 13
 }

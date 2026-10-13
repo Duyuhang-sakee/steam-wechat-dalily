@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 from .http import FetchError
-from .report import BEIJING, MODE, site_url, snapshot_hash, unpack_snapshot
+from .report import BEIJING, MODE, build_page_notification, site_url, snapshot_hash, unpack_snapshot
 
 
 class SendRejected(FetchError):
@@ -53,6 +53,21 @@ def validate_state(state):
                 or not re.fullmatch(r'[a-f0-9]{64}', state['snapshot_sha256'])
                 or type(state.get('suppressed')) is not bool):
             raise ValueError('Invalid single-message journal')
+
+
+def refresh_notification(state):
+    if state.get('mode') != MODE:
+        return False
+    page = state['pages'][0]
+    replaceable = page['status'] == 'failed' or (
+        page['status'] == 'ready' and page['attempts'] == 0 and not page.get('receipt'))
+    if not replaceable:
+        return False
+    content = build_page_notification(datetime.fromisoformat(state['captured_at']), state['site_url'])
+    if page['content'] == content:
+        return False
+    page['content'] = content
+    return True
 
 
 def save_json(path, data):
@@ -194,6 +209,7 @@ def deliver(state, path, client, *, poll_seconds=5):
             raise FetchError(f'Page {index} exhausted its confirmed-failure retries')
         if datetime.now(BEIJING).timestamp() * 1000 >= state['expires_ms']:
             raise FetchError('Daily digest expired; generate a fresh daily snapshot')
+        refresh_notification(state)
         page['status'] = 'sending'
         page['attempts'] = page.get('attempts', 0) + 1
         save_json(path, state)

@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from steam_daily.__main__ import load_config
 from steam_daily.http import FetchError
-from steam_daily.report import BEIJING, build_digest, row
+from steam_daily.report import BEIJING
 from steam_daily.steam import Offer, collect, collect_search, confirm_free, parse_search
 
 
@@ -148,8 +148,8 @@ class SteamTests(unittest.TestCase):
         end = int((self.now + timedelta(hours=12)).timestamp())
         self.assertTrue(confirm_free(offer, free_data(end=end), self.now))
         self.assertEqual(offer.end_epoch, end)
-        self.assertIn('未来24小时内结束', row(offer, self.now))
-        self.assertIn('2026-10-12 21:30', row(offer, self.now))
+        self.assertEqual(datetime.fromtimestamp(offer.end_epoch, BEIJING).strftime('%Y-%m-%d %H:%M'),
+                         '2026-10-12 21:30')
         self.assertIsNone(offer.start_epoch)
         self.assertFalse(confirm_free(self.offer(), free_data('bundle:1', end=end), self.now))
 
@@ -167,26 +167,13 @@ class SteamTests(unittest.TestCase):
         text = '<div class="game_purchase_discount_quantity">Free to keep when you get it before 12 Oct @ 10:00am.</div>'
         self.assertTrue(confirm_free(offer, text, self.now))
         self.assertIsNone(offer.end_epoch)
-        self.assertIn('12 Oct @ 10:00am', row(offer, self.now))
-        self.assertNotIn('未来24小时内结束', row(offer, self.now))
+        self.assertIn('12 Oct @ 10:00am', offer.deadline_note)
 
     def test_invalid_timestamp_and_payload_keep_time_unknown(self):
         offer = self.offer()
         self.assertTrue(confirm_free(offer, free_data(end=True), self.now))
         self.assertIsNone(offer.end_epoch)
         self.assertFalse(confirm_free(self.offer(), '<div data-props="{&quot;rgStoreItems&quot;:[]} "></div>', self.now))
-
-    def test_summary_stays_one_message_and_escapes_names(self):
-        offers = [Offer(f'app:{i}', f'UNIQUE_{i:04}_A&B<C>', f'https://store.steampowered.com/app/{i}/',
-                        50, '¥10', '¥5', 500) for i in range(120)]
-        self.config['message_char_limit'] = 2000
-        content = build_digest([], offers, self.now, self.config, 'https://example.com/steam/', [])
-        self.assertLessEqual(len(content), 2000)
-        self.assertIn('共 120 项', content)
-        self.assertLessEqual(content.count('UNIQUE_'), 5)
-        self.assertIn('A&amp;B&lt;C&gt;', content)
-        self.assertNotIn('A&B<C>', content)
-        self.assertIn('查看全部优惠与游戏封面', content)
 
     def test_config_validation_and_single_daily_schedule(self):
         config = json.loads(Path('config.json').read_text(encoding='utf-8'))

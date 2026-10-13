@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 from steam_daily.delivery import PushPlus, deliver, restore_state, save_json, validate_state
 from steam_daily.http import FetchError, Http
-from steam_daily.report import BEIJING
+from steam_daily.report import BEIJING, MODE
 
 
 class Server:
@@ -204,6 +204,31 @@ class DeliveryTests(unittest.TestCase):
             deliver(state, self.path, client, poll_seconds=0)
             self.assertEqual(state['pages'][0]['status'], 'delivered')
             self.assertEqual(state['pages'][0]['attempts'], 2)
+
+    def test_confirmed_failure_of_old_summary_retries_with_page_link(self):
+        statuses = iter((3, 2))
+        sent = []
+
+        def route(method, url, headers, body):
+            if url == '/send':
+                sent.append(json.loads(body))
+                return 200, {}, {'code': 200, 'data': 'page-link-receipt'}
+            if 'getAccessKey' in url:
+                return 200, {}, {'code': 200, 'data': {'accessKey': 'DUMMY_KEY'}}
+            return 200, {}, {'code': 200, 'data': {'status': next(statuses)}}
+
+        state = journal('accepted', 1, 'old-summary-receipt')
+        state.update(mode=MODE, site_url='https://example.com/steam/',
+                     snapshot_sha256='0' * 64, suppressed=False)
+        state['pages'][0]['content'] = '<p>OLD SUMMARY</p>'
+        with Server(route) as server:
+            deliver(state, self.path, self.local_client(server, secret='DUMMY'), poll_seconds=0)
+        self.assertEqual(len(sent), 1)
+        self.assertNotIn('OLD SUMMARY', sent[0]['content'])
+        self.assertIn(state['site_url'] + '?day=' + state['day'], sent[0]['content'])
+        self.assertEqual(state['pages'][0]['status'], 'delivered')
+        self.assertEqual(state['pages'][0]['attempts'], 2)
+        self.assertEqual(state['pages'][0]['receipt'], 'page-link-receipt')
 
     def test_ambiguous_timeout_never_retries_post(self):
         gate = threading.Event()

@@ -1,4 +1,36 @@
-# 本地验证记录：单条摘要与封面网页
+# 本地验证记录
+
+## 2026-10-13：微信只推送完整页面入口
+
+任务：去掉微信商品摘要，以一个完整网页链接通知哥大查看带封面、搜索和筛选的优惠目录。
+
+实际通过：
+- python -X utf8 -m unittest discover -s tests -v：49项通过。
+- python -X utf8 -m compileall -q steam_daily tests：通过。
+- IDEA build_project：成功；IDEA对Python文件及工作流的错误检查无报错。项目在IDEA中为Java模块且无Python运行配置，Python测试与编译通过IDEA内置终端执行。
+- git diff --check：通过，仅有Windows换行转换提示。
+
+回归测试已先检出旧行为，再确认修正：
+- 准备、公开manifest核验、投递通过真实Http和本地HTTP服务器运行；请求正文仅有一个完整网页链接，没有商品名或折扣摘要，同日重跑仅一次POST。
+- 旧摘要从未发送或已明确失败时替换为链接，快照、尝试次数、状态和流水号不丢失。已接收、待确认、已送达、发送中或结果不明时保持旧记录。
+- 旧摘要先被接收、随后查询确认投递失败的分支，实际重试发送新页面链接；原问题在新增回归测试中可复现。
+- 发布地址或公开快照不匹配时停止发送；原有全量网页、封面、Steam样例、ZIP恢复和旧分页抑制测试继续通过。
+- 首次默认Windows编码执行有3项GBK解码错误，属于原测试环境问题；开启Python UTF-8模式后通过。
+
+本次修改文件：
+- steam_daily/report.py：页面入口替代摘要，删除旧摘要渲染。
+- steam_daily/__main__.py：入口预览及准备流程。
+- steam_daily/delivery.py：在实际发送边界迁移可重发的旧正文。
+- steam_daily/templates/site.html：更新微信通知文案。
+- .github/workflows/daily.yml、config.json：入口命名及移除摘要长度配置。
+- tests/test_report.py、tests/test_delivery.py、tests/test_steam.py：请求正文、迁移与重试回归，移除旧摘要断言。
+- README.md、DESIGN.md、VALIDATION.md：使用方法、平台限制和验证记录。
+
+普通PushPlus微信接口未提供文档化的自定义通知跳转URL。本次使用html模板发送可点击的页面链接，可能先经过PushPlus消息页再打开网页，未实现通知卡片一步直达Pages。未执行真实微信发送、远程部署、提交或推送；不以本地HTTP测试宣称线上界面或最终送达已验证。
+
+工作区另有.idea/misc.xml的MavenRunner设置差异，本次未主动编辑或恢复该文件。
+
+## 历史记录：2026-10-12 单条摘要与封面网页
 
 验证日期：2026-10-12。Windows，Python3.12.14。记录实际执行结果，不表示新版已经部署或微信已经收到。
 
