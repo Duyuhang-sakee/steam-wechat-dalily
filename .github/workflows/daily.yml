@@ -10,6 +10,10 @@ on:
         description: '仅生成网页和微信页面入口预览，不发布、不发送'
         type: boolean
         default: true
+      resend_notification:
+        description: '测试重复推送：每次新的手动运行都发送页面入口'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -49,7 +53,8 @@ jobs:
         env:
           SITE_URL: ${{ steps.pages.outputs.base_url }}
           GITHUB_TOKEN: ${{ github.token }}
-        run: python -m steam_daily --prepare-send --restore --site-url "$SITE_URL"
+          NOTIFICATION_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.resend_notification && github.run_id || '' }}
+        run: python -m steam_daily --prepare-send --restore --site-url "$SITE_URL" --notification-id "$NOTIFICATION_ID"
       - name: Upload complete public webpage
         if: github.event_name == 'schedule' || !inputs.preview_only
         uses: actions/upload-pages-artifact@v3
@@ -59,7 +64,7 @@ jobs:
         id: deployment
         if: github.event_name == 'schedule' || !inputs.preview_only
         uses: actions/deploy-pages@v4
-      - name: Send ONE daily WeChat page notification
+      - name: Send ONE WeChat page notification
         if: github.event_name == 'schedule' || !inputs.preview_only
         env:
           DEPLOYED_URL: ${{ steps.deployment.outputs.page_url }}

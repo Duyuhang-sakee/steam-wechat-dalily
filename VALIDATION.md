@@ -1,5 +1,29 @@
 # 本地验证记录
 
+## 2026-10-13：手动测试允许重复推送
+
+哥大明确要求测试阶段解除同一天只能发一条的限制。本次按Small Feature实现：新的手动Run workflow默认准备并提交一个页面入口，可以当天重复；复用经过绑定验证的当天快照。同一运行的Re-run jobs恢复原发送记录，自动日报及关闭测试选项的手动运行沿用每日去重。
+
+修改文件：
+- .github/workflows/daily.yml：默认开启resend_notification输入，手动测试用github.run_id作为NOTIFICATION_ID，传入准备阶段。
+- steam_daily/__main__.py：支持--notification-id，新编号重建待发送入口并解除旧suppressed，保留被替换的上一条记录；相同编号保留原流水。
+- steam_daily/delivery.py：校验通知编号，恢复时优先取同一次手动运行之前attempt的状态产物。
+- tests/test_report.py：真实本地HTTP验证两个新编号产生两个POST，相同编号重试不新增POST；覆盖旧摘要、不同投递状态、旧分页抑制及非法参数。
+- tests/test_delivery.py：在其他运行产物更新的情况下，优先恢复当前手动运行的流水。
+- README.md、DESIGN.md、VALIDATION.md：手动重复推送入口、重试语义及验证记录。
+
+实际验证：
+- 实现前针对性测试出现9处失败及1处错误，检出原流程无法准备新的手动通知。
+- 实现后报告/流水回归21项通过，投递/HTTP回归18项通过。
+- python -X utf8 -m unittest discover -s tests -v：54项全部通过。
+- python -X utf8 -m compileall -q steam_daily tests：通过。
+- 工作流YAML解析及配置核对：通过；测试输入为boolean、默认开启，通知编号只由手动测试提供，预览仍默认开启。
+- IDEA检查修改的生产Python和工作流文件无错误。
+- git diff --check：通过，仅Windows换行转换提示。
+- Python测试与Git检查通过IDEA内置终端执行，当前IDEA项目没有Python运行配置。
+
+测试使用本地HTTP服务器及虚拟凭证；未执行真实微信推送、远程部署、提交或推送。使用时上传新版，再点新的Run workflow，取消“仅生成预览”，保留“测试重复推送”。生产代码仅使用标准库；YAML核对使用环境已有解析库。
+
 ## 2026-10-13：同日重跑日志修正
 
 线上诊断：运行 [Steam 微信晨报 #7](https://github.com/Duyuhang-sakee/steam-wechat-dalily/actions/runs/38339765397) 的 digest 用时41秒。准备日志显示恢复当天快照；发送正文没有实际发送后的 Page 状态日志，仅有旧版固定的“PushPlus accepted”输出。结合未配置 PUSHPLUS_SECRET_KEY 和投递路径，确认本次复用了当天已接收记录，跳过新POST，不是一次新的全站采集。摘要页有3个产物：github-pages、steam-daily-report-38339765397-1、steam-daily-state-38339765397-1。

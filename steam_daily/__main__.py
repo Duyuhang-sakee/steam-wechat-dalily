@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -92,6 +93,9 @@ def send_prepared(args, config, http):
 
 
 def run(args):
+    if args.notification_id and (not args.prepare_send
+            or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', args.notification_id)):
+        raise ValueError('A valid --notification-id requires --prepare-send')
     config = load_config(args.config)
     http = Http()
     if args.send:
@@ -105,7 +109,7 @@ def run(args):
     now = datetime.now(BEIJING)
     day = now.strftime('%Y-%m-%d')
     if args.prepare_send and args.restore:
-        restore_state(http, state_path, snapshot_path)
+        restore_state(http, state_path, snapshot_path, preferred_run_id=args.notification_id)
     old = None
     if args.prepare_send and state_path.exists():
         old = read_json(state_path)
@@ -119,9 +123,17 @@ def run(args):
         unpack_snapshot(snapshot)
         if snapshot_hash(snapshot) != old['snapshot_sha256'] or snapshot['captured_at'] != old['captured_at']:
             raise ValueError('Saved snapshot does not match the sending journal')
-        if refresh_notification(old):
-            save_json(state_path, old)
         notification = build_page_notification(datetime.fromisoformat(snapshot['captured_at']), url)
+        if args.notification_id and old.get('notification_id') != args.notification_id:
+            old['previous_notification'] = {key: old[key] for key in ('notification_id', 'day', 'pages') if key in old}
+            old.update(notification_id=args.notification_id, suppressed=False, pages=[{
+                'title': f'Steam优惠晨报 {day}', 'content': notification, 'status': 'ready', 'attempts': 0,
+            }])
+            validate_state(old)
+            save_json(state_path, old)
+            print(f'Manual test {args.notification_id}: prepared a NEW page notification; daily deduplication does not apply.', flush=True)
+        elif refresh_notification(old):
+            save_json(state_path, old)
         write_reports(args.report_dir, snapshot, config, notification)
         print(f'Reused today\'s saved snapshot (captured at {old["captured_at"]}); '
               'no Steam rescan in this run. Rebuilt report files from saved data.', flush=True)
@@ -149,18 +161,23 @@ def run(args):
         return
     day = now.strftime('%Y-%m-%d')
     expires = datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), tzinfo=BEIJING)
-    # Any legacy attempt may have reached the provider. Stop its remaining pages for this day.
-    suppressed = bool(old and old['day'] == day and any(
+    # Any legacy attempt may have reached the provider. Explicit manual tests start a new notification.
+    legacy_attempted = bool(old and old['day'] == day and any(
         page['status'] != 'ready' or page['attempts'] > 0 or page.get('receipt') for page in old['pages']))
+    suppressed = legacy_attempted and not args.notification_id
     state = {
         'schema': 1, 'mode': MODE, 'day': day, 'captured_at': now.isoformat(),
         'expires_ms': int(expires.timestamp() * 1000), 'site_url': url,
         'snapshot_sha256': snapshot_hash(snapshot), 'suppressed': suppressed,
         'pages': [{'title': f'Steam优惠晨报 {day}', 'content': content, 'status': 'ready', 'attempts': 0}],
     }
-    if suppressed:
+    if legacy_attempted:
         state['legacy_sends'] = [{key: page[key] for key in ('title', 'status', 'attempts', 'receipt') if key in page}
                                  for page in old['pages']]
+    if args.notification_id:
+        state['notification_id'] = args.notification_id
+        print(f'Manual test {args.notification_id}: prepared a NEW page notification; daily deduplication does not apply.', flush=True)
+    elif suppressed:
         print('Legacy sends detected: website prepared, but no additional WeChat page notification today.', flush=True)
     validate_state(state)
     save_json(snapshot_path, snapshot)
@@ -176,6 +193,7 @@ def main():
     mode.add_argument('--prepare-send', action='store_true', help='Restore/scan and prepare one journal before deploying')
     mode.add_argument('--send', action='store_true', help='Send the prepared page notification after verifying the deployed website')
     parser.add_argument('--restore', action='store_true', help='Restore the latest journal and bound snapshot from Actions')
+    parser.add_argument('--notification-id', default='', help='Prepare a new manual notification with this unique ID; retrying the same ID deduplicates')
     parser.add_argument('--site-url', default='', help='Actual Pages HTTPS base URL for the page notification')
     parser.add_argument('--deployed-url', default='', help='Successful deploy-pages page_url; required with --send')
     parser.add_argument('--snapshot', default='', help='Reuse offers.json for local preview without a Steam scan')

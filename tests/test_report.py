@@ -97,7 +97,7 @@ class PipelineTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.args = argparse.Namespace(config='config.json', report_dir=str(self.root / 'reports'),
             state=str(self.root / 'state/state.json'), prepare_send=True, send=False, restore=False,
-            site_url='https://example.com/steam/', deployed_url='', snapshot='')
+            site_url='https://example.com/steam/', deployed_url='', snapshot='', notification_id='')
         self.config = json.loads(Path('config.json').read_text(encoding='utf-8'))
         self.scan = ([], [product(1), product(2)], {'total': 2, 'pages': 1}, [])
 
@@ -111,7 +111,7 @@ class PipelineTests(unittest.TestCase):
 
     def send_args(self):
         return argparse.Namespace(**{**vars(self.args), 'prepare_send': False, 'send': True,
-                                      'deployed_url': self.args.site_url})
+                                      'deployed_url': self.args.site_url, 'notification_id': ''})
 
     def manifest(self, state):
         return {'schema': 1, 'captured_at': state['captured_at'], 'snapshot_sha256': state['snapshot_sha256']}
@@ -195,6 +195,91 @@ class PipelineTests(unittest.TestCase):
         self.assertNotIn('Game 1', content)
         self.assertNotIn('折扣精选', content)
         self.assertNotIn('OLD DIGEST', content)
+
+    def test_manual_runs_submit_again_with_real_http_and_same_run_retry_deduplicates(self):
+        from test_delivery import Server
+        from steam_daily.http import Http
+
+        original = self.prepare()
+        original['pages'][0].update(content='<p>OLD SUMMARY</p>', status='accepted',
+                                    attempts=1, receipt='old-receipt')
+        save_json(self.args.state, original)
+        submitted = []
+
+        def route(method, url, headers, body):
+            if method == 'GET' and url.startswith('/steam/manifest.json?digest='):
+                return 200, {}, self.manifest(original)
+            self.assertEqual((method, url), ('POST', '/send'))
+            submitted.append(json.loads(body))
+            return 200, {}, {'code': 200, 'data': f'manual-receipt-{len(submitted)}'}
+
+        with Server(route) as server:
+            http = Http(timeout=1)
+            real_json = http.json
+
+            def local_request(url, payload=None, headers=None, **kwargs):
+                from urllib.parse import urlsplit
+                parts = urlsplit(url)
+                return real_json(server.url + parts.path + ('?' + parts.query if parts.query else ''),
+                                 payload, headers, **kwargs)
+
+            http.json = local_request
+            with patch.dict(os.environ, {'PUSHPLUS_TOKEN': 'DUMMY', 'PUSHPLUS_SECRET_KEY': ''}), \
+                    patch('steam_daily.__main__.Http', return_value=http), \
+                    patch('steam_daily.__main__.collect') as collect:
+                for notification_id, expected_count in (('101', 1), ('101', 1), ('102', 2)):
+                    self.args.notification_id = notification_id
+                    run(self.args)
+                    prepared = json.loads(Path(self.args.state).read_text(encoding='utf-8'))
+                    self.assertEqual(prepared['notification_id'], notification_id)
+                    self.assertEqual(prepared['snapshot_sha256'], original['snapshot_sha256'])
+                    self.assertEqual(prepared['captured_at'], original['captured_at'])
+                    run(self.send_args())
+                    self.assertEqual(len(submitted), expected_count)
+                collect.assert_not_called()
+        final = json.loads(Path(self.args.state).read_text(encoding='utf-8'))
+        self.assertEqual(final['pages'][0]['receipt'], 'manual-receipt-2')
+        self.assertEqual(final['previous_notification']['pages'][0]['receipt'], 'manual-receipt-1')
+        for payload in submitted:
+            self.assertEqual(payload['content'].count('<a '), 1)
+            self.assertIn(self.args.site_url + '?day=' + original['day'], payload['content'])
+            self.assertNotIn('OLD SUMMARY', payload['content'])
+
+    def test_manual_run_prepares_new_notification_from_any_previous_status_or_suppression(self):
+        for status, suppressed in (('accepted', False), ('delivered', False), ('pending', False),
+                                   ('sending', False), ('uncertain', False), ('ready', True)):
+            with self.subTest(status=status, suppressed=suppressed):
+                self.args.notification_id = ''
+                state = self.prepare()
+                state['suppressed'] = suppressed
+                state['pages'][0].update(content='<p>OLD SUMMARY</p>', status=status, attempts=1)
+                if status in ('accepted', 'pending', 'delivered'):
+                    state['pages'][0]['receipt'] = 'previous-receipt'
+                save_json(self.args.state, state)
+                self.args.notification_id = f'manual-{status}-{int(suppressed)}'
+                with patch('steam_daily.__main__.collect') as collect:
+                    run(self.args)
+                collect.assert_not_called()
+                prepared = json.loads(Path(self.args.state).read_text(encoding='utf-8'))
+                self.assertFalse(prepared['suppressed'])
+                self.assertEqual(prepared['pages'][0]['status'], 'ready')
+                self.assertEqual(prepared['pages'][0]['attempts'], 0)
+                self.assertNotIn('receipt', prepared['pages'][0])
+                self.assertNotIn('OLD SUMMARY', prepared['pages'][0]['content'])
+                self.assertEqual(prepared['previous_notification']['pages'], state['pages'])
+                self.assertEqual(prepared['snapshot_sha256'], state['snapshot_sha256'])
+
+    def test_notification_id_requires_prepare_and_valid_identifier(self):
+        for prepare, notification_id in ((False, '101'), (True, '../invalid'), (True, 'x' * 101)):
+            with self.subTest(prepare=prepare, notification_id=notification_id):
+                args = argparse.Namespace(**{**vars(self.args), 'prepare_send': prepare,
+                                              'notification_id': notification_id})
+                with patch('steam_daily.__main__.collect') as collect, \
+                        patch('steam_daily.__main__.Http') as http:
+                    with self.assertRaisesRegex(ValueError, 'notification'):
+                        run(args)
+                    collect.assert_not_called()
+                    http.assert_not_called()
 
     def test_verified_delivery_log_distinguishes_new_submission_from_previous_receipt(self):
         for status, final_statuses, expected_sends in (
@@ -295,6 +380,13 @@ class PipelineTests(unittest.TestCase):
             run(self.send_args())
             provider.assert_not_called()
             http.return_value.json.assert_not_called()
+        save_json(self.args.state, state)
+        self.args.notification_id = 'legacy-manual-test'
+        manual = self.prepare()
+        self.assertFalse(manual['suppressed'])
+        self.assertEqual(manual['notification_id'], 'legacy-manual-test')
+        self.assertEqual(manual['pages'][0]['status'], 'ready')
+        self.assertEqual(manual['legacy_sends'][0]['receipt'], 'legacy-receipt')
 
     def test_legacy_ready_journal_can_be_replaced_but_never_sent_directly(self):
         state = self.prepare()

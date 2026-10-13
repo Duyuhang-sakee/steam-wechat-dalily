@@ -291,6 +291,27 @@ class DeliveryTests(unittest.TestCase):
         self.assertIn('/20/zip', http.request.call_args.args[0])
         self.assertEqual(json.loads(self.path.read_text())['pages'][0]['receipt'], 'receipt-1')
 
+    def test_manual_retry_restores_its_own_run_before_a_newer_other_run(self):
+        own = journal('accepted', 1, 'own-receipt')
+        other = journal('accepted', 1, 'other-receipt')
+        archives = {}
+        for artifact_id, state in ((20, own), (21, other)):
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, 'w') as output:
+                output.writestr('state.json', json.dumps(state))
+            archives[artifact_id] = buffer.getvalue()
+        http = Mock()
+        http.json.return_value = {'total_count': 3, 'artifacts': [
+            {'id': 22, 'name': 'steam-daily-state-100-2', 'expired': False},
+            {'id': 21, 'name': 'steam-daily-state-101-1', 'expired': False},
+            {'id': 20, 'name': 'steam-daily-state-100-1', 'expired': False}]}
+        http.request.side_effect = lambda url, **kwargs: archives[int(url.split('/')[-2])]
+        with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'owner/repo', 'GITHUB_TOKEN': 'DUMMY',
+                                     'GITHUB_RUN_ID': '100', 'GITHUB_RUN_ATTEMPT': '2'}):
+            restore_state(http, self.path, preferred_run_id='100')
+        self.assertEqual(json.loads(self.path.read_text())['pages'][0]['receipt'], 'own-receipt')
+        self.assertIn('/20/zip', http.request.call_args.args[0])
+
     def test_provider_requests_share_rate_limit(self):
         client = PushPlus(Mock(), 'DUMMY', 'DUMMY', gap=13)
         client.http.json.side_effect = [{'code': 200, 'data': 'receipt'},
