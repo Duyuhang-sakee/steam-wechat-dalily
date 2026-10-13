@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from steam_daily.__main__ import load_config
 from steam_daily.http import FetchError
-from steam_daily.report import BEIJING, build_pages, row
+from steam_daily.report import BEIJING, build_digest, row
 from steam_daily.steam import Offer, collect, collect_search, confirm_free, parse_search
 
 
@@ -176,18 +176,17 @@ class SteamTests(unittest.TestCase):
         self.assertIsNone(offer.end_epoch)
         self.assertFalse(confirm_free(self.offer(), '<div data-props="{&quot;rgStoreItems&quot;:[]} "></div>', self.now))
 
-    def test_split_preserves_all_items_and_html_escaping(self):
+    def test_summary_stays_one_message_and_escapes_names(self):
         offers = [Offer(f'app:{i}', f'UNIQUE_{i:04}_A&B<C>', f'https://store.steampowered.com/app/{i}/',
                         50, '¥10', '¥5', 500) for i in range(120)]
         self.config['message_char_limit'] = 2000
-        pages = build_pages([], offers, self.now, self.config, {'pages': 2, 'total': 120}, [])
-        self.assertGreater(len(pages), 1)
-        self.assertTrue(all(len(p) <= 2000 for p in pages))
-        merged = ''.join(pages)
-        for i in range(120):
-            self.assertEqual(merged.count(f'UNIQUE_{i:04}_'), 1)
-        self.assertIn('A&amp;B&lt;C&gt;', merged)
-        self.assertNotIn('A&B<C>', merged)
+        content = build_digest([], offers, self.now, self.config, 'https://example.com/steam/', [])
+        self.assertLessEqual(len(content), 2000)
+        self.assertIn('共 120 项', content)
+        self.assertLessEqual(content.count('UNIQUE_'), 5)
+        self.assertIn('A&amp;B&lt;C&gt;', content)
+        self.assertNotIn('A&B<C>', content)
+        self.assertIn('查看全部优惠与游戏封面', content)
 
     def test_config_validation_and_single_daily_schedule(self):
         config = json.loads(Path('config.json').read_text(encoding='utf-8'))

@@ -1,62 +1,79 @@
 # Steam 微信每日晨报
 
-每天北京时间 **09:30** 由 GitHub Actions 检查一次 Steam 国区商品，将当前限时永久领取活动和折扣 **≥50%** 的商品发到微信。限免也只有每日一次检查，没有每十分钟扫描或单独的截止前一小时任务。
+每天北京时间 **09:30** 开始检查一次 Steam 国区优惠，微信只发 **一条摘要**：限时永久领取、最多 5 项折扣精选、完整网页链接。全部五折及以上商品放在带封面的 GitHub Pages 网页，支持搜索、筛选、排序和分页，不再拆成几十条消息。
 
-GitHub 工作流采用 UTC `30 1 * * *`。09:30 是计划开始时间，采集和分页发送需要时间，GitHub 本身也可能延迟或跳过任务，因此不是微信准点到账保证。每天推送当前仍有效的名单；已知在未来 24 小时内结束的限免会加醒目标记。每日重复出现仍有效商品属于预期行为；同一天重跑不会重新发送平台已接收的页面。
+09:30 是任务计划开始时间，采集、网页发布和 GitHub 调度会带来延迟，并非微信准点到账保证。没有每十分钟扫描，也没有单独的截止前任务。
 
-## 在 GitHub 启用
+## 更新已有仓库
 
-1. 新建 **公开仓库**，把本目录里的文件放到仓库根目录。必须包含 `.github/workflows/daily.yml` 和 `steam_daily/`，不要把整个外层目录再套一层。可通过 GitHub 网页逐个创建文件；网页批量上传可能漏掉隐藏的 `.github` 目录，上传后确认工作流实际存在。
-2. 关注 PushPlus 微信公众号，按其当前规则完成账号配置和实名认证，取得消息推送 Token。
-3. 在仓库 **Settings → Secrets and variables → Actions → New repository secret** 新增 `PUSHPLUS_TOKEN`，只在这里填真实 Token，不要写入源码、公开配置或日志。
-4. 打开 **Actions → Steam 微信晨报 → Run workflow**。默认勾选“仅生成预览”，先运行并下载 `steam-daily-report-…` 检查名单。取消该选项才会发微信。
-5. 首次确认微信收到后，默认分支上的工作流会按每天北京时间 09:30 自动运行。无需 Windows 电脑常开。
+1. 将新版完整项目文件覆盖到本地项目，再由哥大提交并上传到 GitHub。仓库根目录必须能看到 steam_daily/、tests/ 和 config.json；确认隐藏目录 .github/workflows/daily.yml 也已更新。上传的是解压后的项目文件，压缩包用于下载。
+2. 打开仓库 **Settings → Pages → Build and deployment → Source**，选择 **GitHub Actions**。尚未设置时，工作流会在读取 Pages 配置时停止；程序不会自行修改仓库设置。
+3. 保留现有 Actions Secret **PUSHPLUS_TOKEN**，无需重新填写，也不需要提供给聊天。可选 PUSHPLUS_SECRET_KEY 仍沿用。
+4. 在 **Actions → Steam 微信晨报 → Run workflow** 先保留“仅生成网页和微信摘要预览”选项。报告 ZIP 中 **site/index.html** 是完整网页，**wechat-summary.html** 是单条消息预览；预览不会发布或发微信。
+5. 检查后取消“仅生成预览”运行一次。工作流先部署 Pages，核验线上网页确为这份数据，再发送摘要。入口可在 **Settings → Pages → Visit site** 查看；消息链接自动采用实际 Pages 地址，支持自定义域名。
+6. 之后按每天北京时间 09:30 自动运行，Windows 电脑无需常开。Pages 页面每天覆盖为最新快照，旧微信链接也打开最新名单，并提示日期变化。
 
-本交付只包含本地文件，没有创建远程仓库、提交、推送或开启线上任务。普通标准 GitHub 执行器的公开仓库运行分钟免费；存储额度单独计算。本工具仅保留小型 JSON、HTML 报告，报告留存 7 天、状态留存 30 天。大型执行器不在此方案内。
+**升级当天：** 若旧版状态中已有任何消息发送尝试，更新后会停止旧版未发分页，当天仅更新网页、不额外发摘要，次日恢复每日一条。如果旧任务仍在运行，它使用的是旧代码，需要在 Actions 中取消该次运行；上传新版不会改变已经开始执行的任务。
 
-本地32项测试通过；2026-10-12真实预览遍历9,840条优惠，筛出6项限免、5,766项折扣商品，生成43页微信内容。因此“全站每日汇总”可能包含数十条消息，未来大促期间页数还会变化。详细结果见 [验证记录](VALIDATION.md)，实现取舍见 [方案](DESIGN.md)。
+当前仓库默认分支为 master。运行新版工作流应选择默认分支；若 Pages 的 github-pages 环境配置了部署分支限制，也应允许该分支。
 
-## 商品与时间
+## 网页与精选规则
 
-- 按名称排序遍历公开优惠搜索的全部分页，再筛选折扣≥50%，展示时按折扣高低排序；包含游戏、DLC、软件、礼包等公开可见商品，不只取热门前 N 个。缺失国区售价的空价格条目不当作免费，汇总中说明数量。国区不可见、需登录或个性化商品不承诺覆盖。
-- 100% 折扣、价格为零的条目需在详情页核验“永久领取”，排除免费周末、长期免费和 Demo；限免与普通折扣分组。
-- 开始时间、结束时间只使用明确的活动字段。搜索列表不提供多数折扣截止时间，这类商品标为未知；不对数千条商品逐条抓取详情。
-- 部分新详情页提供 `free_to_keep_ends` Unix 时间戳，可准确换算北京时间。旧详情页可能只提供无时区文本，保留原文并标记时区未核实，不能据此宣称“未来24小时结束”。公告发布时间不当作活动开始时间。
-- 两次晨报之间开始并结束的活动可能漏掉。限免领取需要哥大自行打开 Steam；工具不登录账户、不自动领取或购买。
-- Steam 未公开承诺搜索内部接口稳定性。解析结构变化、分页缺失/重复、抓取失败会让运行报错，避免发送残缺名单。采集期间商品总数变化或发生跨页重复时，最多重新完整抓取一次；再次失败则停止，稍后手动重跑。这是同一个每日任务内的有限重试，没有另设高频扫描。
-- Steam 分页请求默认间隔3秒。GET 请求遇到临时故障最多尝试3次；429 默认等待60秒，并优先遵守 `Retry-After`。服务器要求等待超过60秒时直接停止，留待较晚重跑；不要并行或连续反复抓取全站。
+- 完整遍历所有公开国区优惠搜索分页，筛选折扣 ≥50%；包含游戏、DLC、软件、礼包、捆绑包等，不只截取热门商品。网页每页展示 24 项，全部结果仍在页面数据和 offers.json 中。
+- 封面直接读取 Steam 搜索结果中的实际 HTTPS 图片地址，不猜测 CDN 路径，不为封面逐个抓取数千个详情页。图片缺失或加载失败时显示占位图。搜索小封面可能清晰度有限。
+- 折扣精选最多 5 项：优先好评率 ≥80%、评测量 ≥500 的商品，按评测量降序，再以折扣降序、价格升序补足。评测不足不编造评分；精选可能包含 DLC 或软件，不代表个性化推荐。评测来自同一搜索结果，不增加额外全站请求。
+- 100% 折扣且价格为零的候选需在详情页核验限时永久领取；排除免费周末、长期免费、Demo 和无国区公开售价的条目。
+- 可靠领取截止时间换算北京时间，并标出未来 24 小时内结束的限免。无时区的原文保留、注明未核实时区。公告发布时间不当作活动开始时间，多数普通折扣的起止时间仍未公开。
+- 限免特别多或名称过长时，摘要只展示能放下的部分，并提示到网页查看；始终保持一条消息，网页不截断商品。
+- 每天只检查一次，短活动可能在两次检查之间错过。价格、领取条件及需要的本体以 Steam 商品页为准；不自动登录、领取或购买。
 
-## 消息长度、投递与失败
+## 发布、去重与失败
 
-长名单会分页，因此每天是“一批晨报”，不一定只有一条微信消息。所有结果都有完整 JSON 和 HTML 报告，分页不会只保留前 N 个。默认正文上限 18,000 字符，所有 PushPlus 请求间隔至少 13 秒，包含可选的认证和状态查询；每次真实发送只发出一个请求。
+工作流顺序：测试 → 读取 Pages 地址 → 采集或恢复当天快照 → 生成网页及单条摘要 → 上传 Pages 文件 → 部署 → 核验公开 manifest.json 的数据哈希 → 发送微信。发布失败、地址不匹配或线上数据未更新时不发消息。Pages CDN 尚未同步时停止，稍后手动重跑即可。
 
-普通 `PUSHPLUS_TOKEN` 模式只能确认 **PushPlus 平台已接收**，不能证实微信已到达。保存平台流水号后同一天跳过已接收页。平台明确拒绝或查询到投递失败时，可修复原因后手动重跑，同一页最多发送三次；请求超时、结果不明时不盲目重发，状态记为 `uncertain`，需要在 PushPlus 消息记录中核对。
+状态 artifact 保存 state.json 和与它绑定的 offers.json。同一天重跑沿用原始数据、原始摘要和发送记录，不重新采集；若原数据被改动或缺失则停止。下一天生成新快照，午夜后不补发旧价格。
 
-可选 Secret `PUSHPLUS_SECRET_KEY` 用于查询最终投递状态。这还要求在 PushPlus 开启开放接口、配置 secretKey 和安全 IP；标准 GitHub 执行器的出口 IP 动态变化，不能仅填写 Secret 就保证可用。不具备这个条件时保持普通 Token 模式，直接核实微信是否收到。状态查询不依赖公网回调服务器。
+普通 Token 模式只确认 **PushPlus 已接收**，不证明微信已送达；同一天跳过已接收消息。明确拒绝或确认投递失败后，手动重跑可有限重试，最多 3 次。超时、发送结果不明时保留 uncertain 状态，停止自动重发，需要在 PushPlus 记录中核对。不能保证跨崩溃和 artifact 保存失败的严格恰好一次。
 
-状态通过 Actions artifact 保存，工作流 `concurrency` 防止运行重叠，使用只读仓库和 Actions 权限；不自动提交或推送。当天重跑恢复已生成的快照及未发页，包括同一次运行的前一次尝试；不会再次抓取，数据仍是页面标注的原采集时刻。当天较晚补发时部分活动可能已结束，应以商店页为准。第二天生成新快照，前一天的内容午夜后禁止补发。状态 artifact 过期/被手动删除后，同一天去重不能保证；机器在平台接收后、记录保存前突然终止，也无法保证严格恰好一次发送。
+可选 PUSHPLUS_SECRET_KEY 能查询最终投递状态，但还需 PushPlus 开放接口及安全 IP 配置；GitHub 标准执行器出口 IP 会变化。所有 PushPlus 请求间隔至少 13 秒，发送 POST 不自动重试。失败只影响这一条摘要，不再遍历几十页发送。
 
-若运行红色失败，请查看 Actions 日志和 `steam-daily-state-…`：`ready` 为待发、`accepted` 为平台接收、`pending` 为等待最终状态、`delivered` 为平台报告已发送、`failed` 为确认投递失败、`uncertain` 为结果不明。失败时不要连续重跑或删除状态来强制发送，以免重复通知或耗尽 PushPlus 额度。
+Actions 状态与报告均为 ZIP 下载产物，用于备份和查看；微信正文是摘要与链接，**不是压缩包附件**。Pages 只发布 reports/site/ 的公开商品数据，不上传状态或凭证。
 
-PushPlus 当前实名普通账户有每日请求额度、频率和内容长度限制。若全站结果太多或同账户其他工具已用完额度，会暂停发送，完整报告仍可从 Actions 下载；不能承诺每次所有页面都能通过免费微信额度投递。次日不补发旧价格页面。
+## Windows 本地预览
 
-## Windows 本地预览或测试
+Python **3.12+**，生产代码只使用标准库。在项目目录运行：
 
-Python **3.12+**，只使用标准库，无需安装第三方依赖。在本目录执行：
+    python -m unittest discover -s tests -v
+    python -m steam_daily
 
-```powershell
-python -m unittest discover -s tests -v
-python -m steam_daily
-```
+默认生成 reports/site/index.html、offers.json、manifest.json 以及 reports/wechat-summary.html，不发微信、不部署、不保存投递状态。直接打开 index.html 可浏览和筛选，下载 JSON 需保留同目录的 offers.json。
 
-默认仅预览、不发微信、不写投递状态；生成 `reports/offers.json` 和分页 HTML。实际发送用 `python -m steam_daily --send`，Token 通过环境变量设置；不要将凭证粘贴到聊天、源码或可共享的终端记录。
+已有数据可免扫描预览：
 
-`config.json` 可调整折扣阈值、分页上限、中文/英文与限速；当前版本固定国区。增加 `max_pages` 会增加抓取耗时；达到上限时会报错而非截断商品。
+    python -m steam_daily --snapshot path/to/offers.json
 
-## 官方依据
+实际部署后的发送分两步，日常由工作流自动完成：
 
-- [GitHub 调度规则](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)：可能延迟，公开仓库连续 60 天没有活动会自动停用定时工作流，需要检查并重新启用。
-- [GitHub Actions 费用](https://docs.github.com/en/billing/concepts/product-billing/github-actions)：公开仓库标准执行器运行分钟免费，存储另有额度。
-- [PushPlus 消息接口](https://www.pushplus.plus/doc/guide/api.html)、[开放接口](https://www.pushplus.plus/doc/guide/openApi.html)、[限制说明](https://www.pushplus.plus/doc/help/limit.html)：异步发送、最终状态查询前提、额度、内容长度及频率。
+    python -m steam_daily --prepare-send --restore --site-url https://example.github.io/repository/
+    # 在这两步之间发布 reports/site 到该地址。
+    python -m steam_daily --send --deployed-url https://example.github.io/repository/
 
-仓库未执行任何自保活提交；日常工作流是否会被 GitHub 视为仓库活动不作保证，需关注 Actions 状态。
+真实 Token 只通过环境变量或 GitHub Secrets 提供。--send 必须使用当天已准备的新版状态，并核对已发布网页；不能直接发送旧版分页状态。
+
+config.json 可以调整阈值、分页上限、中文/英文和限速，固定国区。分页间隔默认 3 秒；总数变化/重复时最多完整重试一次，GET 临时失败有限重试并尊重限流；持续失败则停止，不发残缺名单。
+
+## 费用与维护
+
+公开仓库标准 GitHub Actions 执行器的运行分钟免费，GitHub Pages 可免费托管公开仓库静态网页；存储配额及 PushPlus 配额另算。报告留存 7 天、状态留存 30 天。没有自动提交、推送或自保活任务。
+
+公开仓库连续 60 天没有活动时定时工作流可能停用，需要检查 Actions 状态。定时任务可能延迟或跳过。Steam 搜索内部接口及图片路径可能变化，不能保证每日成功。
+
+实现与实测见 [DESIGN.md](DESIGN.md)、[VALIDATION.md](VALIDATION.md)。
+
+## 官方资料
+
+- [GitHub Pages 自定义工作流](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages)
+- [Pages 配置 Action](https://github.com/actions/configure-pages)、[发布 Action](https://github.com/actions/deploy-pages)
+- [Actions 定时规则](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
+- [Actions 费用](https://docs.github.com/en/billing/concepts/product-billing/github-actions)
+- [PushPlus 消息接口](https://www.pushplus.plus/doc/guide/api.html)、[开放接口](https://www.pushplus.plus/doc/guide/openApi.html)、[限制](https://www.pushplus.plus/doc/help/limit.html)

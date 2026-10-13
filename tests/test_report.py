@@ -1,0 +1,245 @@
+import argparse
+import io
+import json
+import os
+import re
+import tempfile
+import unittest
+import zipfile
+from datetime import datetime, timedelta
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+from steam_daily.__main__ import run
+from steam_daily.delivery import restore_state, save_json, validate_state
+from steam_daily.http import FetchError
+from steam_daily.report import BEIJING, MODE, build_digest, build_site, select_recommendations, site_url, snapshot_hash
+from steam_daily.steam import Offer, parse_search, safe_image_url
+
+
+def product(index, **changes):
+    return Offer(**{
+        'key': f'app:{index}', 'name': f'Game {index}', 'url': f'https://store.steampowered.com/app/{index}/',
+        'discount': 50, 'original': '¥10', 'current': '¥5', 'final_cents': 500, **changes,
+    })
+
+
+def snapshot(freebies=None, discounts=None):
+    return {'captured_at': datetime.now(BEIJING).isoformat(), 'country': 'CN', 'minimum_discount': 50,
+            'stats': {'total': 100, 'pages': 1}, 'freebies': [item.to_dict() for item in (freebies or [])],
+            'discounts': [item.to_dict() for item in (discounts or [])], 'warnings': []}
+
+
+class ReportTests(unittest.TestCase):
+    def setUp(self):
+        self.config = json.loads(Path('config.json').read_text(encoding='utf-8'))
+
+    def test_all_6000_offers_preserved_in_single_safe_webpage(self):
+        offers = [product(i, name=f'Game {i} </script><img src=x onerror=alert(1)> &') for i in range(6000)]
+        document = build_site(snapshot(discounts=offers), self.config)
+        payload = re.search(r'<script id="offer-data" type="application/json">(.*?)</script>', document, re.S)[1]
+        data = json.loads(payload)
+        self.assertEqual(len(data['offers']), 6000)
+        self.assertEqual({item['key'] for item in data['offers']}, {item.key for item in offers})
+        self.assertNotIn('</script>', payload)
+        self.assertNotIn('<img', payload)
+        self.assertEqual(data['offers'][0]['name'], offers[0].name)
+        self.assertNotIn('@@DATA@@', document)
+        self.assertNotIn('@@STYLE@@', document)
+
+    def test_recommendations_use_reviews_and_deterministic_discount_fallback(self):
+        offers = [product(1, discount=95), product(2, review_positive=95, review_count=600),
+                  product(3, review_positive=80, review_count=1000), product(4, review_positive=79, review_count=9999),
+                  product(5, review_positive=99, review_count=499), product(6, discount=90)]
+        picked = select_recommendations(offers)
+        self.assertEqual([item.key for item in picked], ['app:3', 'app:2', 'app:1', 'app:6', 'app:4'])
+        self.assertEqual(len({item.key for item in picked}), 5)
+
+    def test_many_freebies_are_bounded_with_link_to_overflow(self):
+        freebies = [product(i, free=True, discount=100, current='免费', final_cents=0, name='长名称' * 100)
+                    for i in range(100)]
+        config = {**self.config, 'message_char_limit': 2000}
+        content = build_digest(freebies, [product(200)], datetime.now(BEIJING), config, 'https://example.com/', [])
+        self.assertLessEqual(len(content), 2000)
+        self.assertIn('另有', content)
+        self.assertIn('限免 100 项', content)
+        self.assertIn('查看全部优惠', content)
+
+    def test_observed_covers_and_chinese_review_data_from_real_fixture(self):
+        raw = json.loads(Path('tests/fixtures/steam-search-cn.json').read_text(encoding='utf-8'))
+        offers = parse_search(raw['results_html'])
+        self.assertTrue(all(item.image_url.startswith('https://') for item in offers))
+        self.assertEqual(offers[0].review_positive, 54)
+        self.assertEqual(offers[0].review_count, 719)
+        self.assertIn('capsule_231x87', offers[0].image_url)
+
+    def test_english_reviews_and_missing_or_unsafe_images(self):
+        from test_steam import search_row
+        markup = search_row().replace('<span class="title">', '<img src="javascript:alert(1)">'
+            '<span class="search_review_summary" data-tooltip-html="Very Positive&lt;br&gt;'
+            '95% of the 1,234 user reviews are positive."></span><span class="title">')
+        offer = parse_search(markup)[0]
+        self.assertEqual(offer.image_url, '')
+        self.assertEqual((offer.review_positive, offer.review_count), (95, 1234))
+        self.assertEqual(parse_search(search_row())[0].image_url, '')
+        for url in ('http://shared.fastly.steamstatic.com/a.jpg', 'https://steamstatic.com.evil.invalid/a.jpg',
+                    'https://user:pass@steamstatic.com/a.jpg', 'data:image/svg+xml,test', '//steamstatic.com/a.jpg'):
+            self.assertEqual(safe_image_url(url), '')
+
+    def test_https_pages_url_validation(self):
+        self.assertEqual(site_url('https://example.com/project'), 'https://example.com/project/')
+        for url in ('http://example.com/', 'https://user:pass@example.com/', 'https://example.com/?token=x',
+                    'https://example.com/#x', 'https://example.com/<img>', 'https://example.com:bad/'):
+            with self.assertRaises(ValueError):
+                site_url(url)
+
+
+class PipelineTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.args = argparse.Namespace(config='config.json', report_dir=str(self.root / 'reports'),
+            state=str(self.root / 'state/state.json'), prepare_send=True, send=False, restore=False,
+            site_url='https://example.com/steam/', deployed_url='', snapshot='')
+        self.config = json.loads(Path('config.json').read_text(encoding='utf-8'))
+        self.scan = ([], [product(1), product(2)], {'total': 2, 'pages': 1}, [])
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def prepare(self):
+        with patch('steam_daily.__main__.collect', return_value=self.scan):
+            run(self.args)
+        return json.loads(Path(self.args.state).read_text(encoding='utf-8'))
+
+    def send_args(self):
+        return argparse.Namespace(**{**vars(self.args), 'prepare_send': False, 'send': True,
+                                      'deployed_url': self.args.site_url})
+
+    def manifest(self, state):
+        return {'schema': 1, 'captured_at': state['captured_at'], 'snapshot_sha256': state['snapshot_sha256']}
+
+    def test_prepare_creates_one_message_and_bound_site_with_no_provider_calls(self):
+        with patch('steam_daily.__main__.PushPlus') as provider:
+            state = self.prepare()
+        provider.assert_not_called()
+        self.assertEqual(state['mode'], MODE)
+        self.assertEqual(len(state['pages']), 1)
+        validate_state(state)
+        saved = json.loads((self.root / 'state/offers.json').read_text(encoding='utf-8'))
+        self.assertEqual(state['snapshot_sha256'], snapshot_hash(saved))
+        document = self.root / 'reports/site/index.html'
+        self.assertTrue(document.exists())
+        self.assertTrue((self.root / 'reports/wechat-summary.html').exists())
+        self.assertEqual(json.loads((document.parent / 'manifest.json').read_text())['snapshot_sha256'],
+                         state['snapshot_sha256'])
+
+    def test_send_after_public_manifest_check_and_same_day_deduplication(self):
+        state = self.prepare()
+        http = Mock()
+        http.json.return_value = self.manifest(state)
+        client = Mock(secret_key='')
+        client.send.return_value = 'receipt'
+        client.status.return_value = None
+        with patch.dict(os.environ, {'PUSHPLUS_TOKEN': 'DUMMY'}), patch('steam_daily.__main__.Http', return_value=http), \
+                patch('steam_daily.__main__.PushPlus', return_value=client):
+            run(self.send_args())
+            run(self.send_args())
+        client.send.assert_called_once()
+        self.assertIn('manifest.json?digest=', http.json.call_args.args[0])
+        self.assertEqual(json.loads(Path(self.args.state).read_text())['pages'][0]['status'], 'accepted')
+
+    def test_wrong_deployment_or_stale_public_snapshot_never_sends(self):
+        self.prepare()
+        http = Mock()
+        http.json.return_value = {'schema': 1, 'snapshot_sha256': '0' * 64}
+        for deployed in ('https://different.example/', self.args.site_url):
+            args = self.send_args()
+            args.deployed_url = deployed
+            with patch.dict(os.environ, {'PUSHPLUS_TOKEN': 'DUMMY'}), \
+                    patch('steam_daily.__main__.Http', return_value=http), patch('steam_daily.__main__.PushPlus') as provider:
+                with self.assertRaises((ValueError, FetchError)):
+                    run(args)
+                provider.assert_not_called()
+        self.assertEqual(json.loads(Path(self.args.state).read_text())['pages'][0]['attempts'], 0)
+
+    def test_same_day_prepare_reuses_saved_snapshot_without_rescanning(self):
+        state = self.prepare()
+        with patch('steam_daily.__main__.collect') as collect:
+            run(self.args)
+        collect.assert_not_called()
+        self.assertEqual(json.loads(Path(self.args.state).read_text()), state)
+        saved = json.loads((self.root / 'state/offers.json').read_text(encoding='utf-8'))
+        saved['discounts'][0]['current'] = 'CHANGED'
+        save_json(self.root / 'state/offers.json', saved)
+        with self.assertRaisesRegex(ValueError, 'does not match'):
+            run(self.args)
+
+    def test_legacy_43_pages_are_stopped_after_any_attempt(self):
+        state = self.prepare()
+        for field in ('mode', 'site_url', 'snapshot_sha256', 'suppressed'):
+            del state[field]
+        state['pages'] *= 43
+        state['pages'][0] = {**state['pages'][0], 'status': 'accepted', 'attempts': 1, 'receipt': 'legacy-receipt'}
+        save_json(self.args.state, state)
+        migrated = self.prepare()
+        self.assertTrue(migrated['suppressed'])
+        self.assertEqual(len(migrated['pages']), 1)
+        self.assertEqual(migrated['legacy_sends'][0]['receipt'], 'legacy-receipt')
+        with patch('steam_daily.__main__.PushPlus') as provider, patch('steam_daily.__main__.Http') as http:
+            run(self.send_args())
+            provider.assert_not_called()
+            http.return_value.json.assert_not_called()
+
+    def test_legacy_ready_journal_can_be_replaced_but_never_sent_directly(self):
+        state = self.prepare()
+        for field in ('mode', 'site_url', 'snapshot_sha256', 'suppressed'):
+            del state[field]
+        save_json(self.args.state, state)
+        with self.assertRaisesRegex(ValueError, 'Legacy'):
+            run(self.send_args())
+        self.assertFalse(self.prepare()['suppressed'])
+
+    def test_new_journal_restores_bound_snapshot_from_artifact(self):
+        state = self.prepare()
+        saved = (self.root / 'state/offers.json').read_bytes()
+        http = Mock()
+        http.json.return_value = {'total_count': 1, 'artifacts': [
+            {'id': 20, 'name': 'steam-daily-state-100-1', 'expired': False}]}
+        target = self.root / 'restored'
+        for corrupt in (False, True):
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, 'w') as archive:
+                archive.writestr('state.json', json.dumps(state))
+                archive.writestr('offers.json', saved if not corrupt else saved.replace(b'Game 1', b'Game X'))
+            http.request.return_value = buffer.getvalue()
+            with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'owner/repo', 'GITHUB_TOKEN': 'DUMMY',
+                                         'GITHUB_RUN_ID': '101', 'GITHUB_RUN_ATTEMPT': '1'}):
+                if corrupt:
+                    with self.assertRaisesRegex(ValueError, 'does not match'):
+                        restore_state(http, target / 'state.json', target / 'offers.json')
+                else:
+                    restore_state(http, target / 'state.json', target / 'offers.json')
+                    self.assertEqual(snapshot_hash(json.loads((target / 'offers.json').read_text(encoding='utf-8'))),
+                                     state['snapshot_sha256'])
+
+    def test_preview_from_snapshot_does_not_create_journal_or_scan(self):
+        source = self.root / 'source.json'
+        save_json(source, snapshot(discounts=[product(1)]))
+        args = argparse.Namespace(**{**vars(self.args), 'prepare_send': False, 'snapshot': str(source)})
+        with patch('steam_daily.__main__.collect') as collect, patch('steam_daily.__main__.PushPlus') as provider:
+            run(args)
+        collect.assert_not_called()
+        provider.assert_not_called()
+        self.assertFalse(Path(self.args.state).exists())
+        self.assertTrue((self.root / 'reports/site/index.html').exists())
+
+    def test_single_message_state_rejects_multiple_pages(self):
+        state = self.prepare()
+        state['pages'] *= 2
+        with self.assertRaisesRegex(ValueError, 'single-message'):
+            validate_state(state)
+
+
+if __name__ == '__main__':
+    unittest.main()

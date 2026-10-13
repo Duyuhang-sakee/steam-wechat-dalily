@@ -4,7 +4,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from html.parser import HTMLParser
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from .http import FetchError
 
@@ -72,9 +72,41 @@ class Offer:
     start_epoch: int | None = None
     deadline_note: str = ''
     priced: bool = True
+    image_url: str = ''
+    review_positive: int | None = None
+    review_count: int | None = None
 
     def to_dict(self):
         return asdict(self)
+
+
+def safe_image_url(value):
+    """Only use observed HTTPS Steam image URLs; never guess CDN asset paths."""
+    if not isinstance(value, str):
+        return ''
+    try:
+        parts = urlsplit(value)
+        if (parts.scheme == 'https' and parts.hostname and not parts.username and not parts.password
+                and parts.port in (None, 443)
+                and any(parts.hostname == domain or parts.hostname.endswith('.' + domain)
+                        for domain in ('steamstatic.com', 'steamcdn-a.akamaihd.net'))):
+            return value
+    except ValueError:
+        pass
+    return ''
+
+
+def search_metadata(row):
+    image_url = next((url for node in row.walk() if node.tag == 'img'
+                      if (url := safe_image_url(node.attrs.get('src', '')
+                                                or node.attrs.get('data-src', '')))), '')
+    reviews = row.with_class('search_review_summary')
+    tooltip = Document(reviews[0].attrs.get('data-tooltip-html', '')).root.text() if reviews else ''
+    percent = re.search(r'(\d{1,3})%', tooltip)
+    count = re.search(r'([\d,]+)\s*篇用户评测', tooltip) or re.search(r'of the ([\d,]+) user reviews', tooltip, re.I)
+    positive = int(percent[1]) if percent and int(percent[1]) <= 100 else None
+    quantity = int(count[1].replace(',', '')) if count else None
+    return {'image_url': image_url, 'review_positive': positive, 'review_count': quantity}
 
 
 def parse_search(text):
@@ -84,6 +116,7 @@ def parse_search(text):
         titles = row.with_class('title')
         if not match or not titles or not titles[0].text():
             raise FetchError('Steam search item identity/title changed')
+        metadata = search_metadata(row)
         blocks = [n for n in row.walk() if 'data-discount' in n.attrs]
         if not blocks:
             # Specials also contains region-unavailable products with an explicitly empty price block.
@@ -95,7 +128,7 @@ def parse_search(text):
                 offers.append(Offer(
                     key=f'{match[1]}:{match[2]}', name=titles[0].text(),
                     url=f'https://store.steampowered.com/{match[1]}/{match[2]}/',
-                    discount=0, original='未知', current='价格未公开', final_cents=0, priced=False,
+                    discount=0, original='未知', current='价格未公开', final_cents=0, priced=False, **metadata,
                 ))
                 continue
             raise FetchError(f'Steam search discount markup changed for {match[1]}:{match[2]}')
@@ -114,7 +147,7 @@ def parse_search(text):
             key=f'{match[1]}:{match[2]}', name=titles[0].text(),
             url=f'https://store.steampowered.com/{match[1]}/{match[2]}/',
             discount=discount, original=original_nodes[0].text() if original_nodes else '未知',
-            current=final_nodes[0].text(), final_cents=cents,
+            current=final_nodes[0].text(), final_cents=cents, **metadata,
         ))
     return offers
 

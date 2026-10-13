@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 from .http import FetchError
-from .report import BEIJING
+from .report import BEIJING, MODE, site_url, snapshot_hash, unpack_snapshot
 
 
 class SendRejected(FetchError):
@@ -45,6 +45,14 @@ def validate_state(state):
             raise ValueError('Sending journal is missing a receipt')
     if len(json.dumps(state, ensure_ascii=False).encode('utf-8')) > 4_500_000:
         raise ValueError('Sending journal exceeds artifact size budget')
+    if 'mode' in state:
+        if (state['mode'] != MODE or len(pages) != 1
+                or not isinstance(state.get('site_url'), str)
+                or site_url(state['site_url']) != state['site_url']
+                or not isinstance(state.get('snapshot_sha256'), str)
+                or not re.fullmatch(r'[a-f0-9]{64}', state['snapshot_sha256'])
+                or type(state.get('suppressed')) is not bool):
+            raise ValueError('Invalid single-message journal')
 
 
 def save_json(path, data):
@@ -55,7 +63,7 @@ def save_json(path, data):
     os.replace(temporary, path)
 
 
-def restore_state(http, path):
+def restore_state(http, path, snapshot_path=None):
     """Restore the latest completed run's journal; never use cache as durable state."""
     repository = os.environ.get('GITHUB_REPOSITORY')
     token = os.environ.get('GITHUB_TOKEN')
@@ -86,9 +94,21 @@ def restore_state(http, path):
             if member.file_size > 5_000_000:
                 raise ValueError('State artifact unexpectedly large')
             state = json.loads(archive.read(member))
+            validate_state(state)
+            snapshot = None
+            if state.get('mode') == MODE and snapshot_path is not None:
+                snapshot_member = archive.getinfo('offers.json')
+                if snapshot_member.file_size > 20_000_000:
+                    raise ValueError('Report snapshot unexpectedly large')
+                snapshot = json.loads(archive.read(snapshot_member))
+                unpack_snapshot(snapshot)
+                if snapshot_hash(snapshot) != state['snapshot_sha256']:
+                    raise ValueError('Restored report does not match sending journal')
     except (zipfile.BadZipFile, KeyError):
         raise ValueError('Invalid state artifact archive') from None
     validate_state(state)
+    if snapshot is not None:
+        save_json(snapshot_path, snapshot)
     save_json(path, state)
 
 

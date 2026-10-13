@@ -7,13 +7,15 @@ on:
   workflow_dispatch:
     inputs:
       preview_only:
-        description: '仅生成预览，不发送微信'
+        description: '仅生成网页和微信摘要预览，不发布、不发送'
         type: boolean
         default: true
 
 permissions:
   contents: read
   actions: read
+  pages: write
+  id-token: write
 
 concurrency:
   group: steam-wechat-daily
@@ -23,6 +25,9 @@ jobs:
   digest:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -30,22 +35,43 @@ jobs:
           python-version: '3.12'
       - name: Run focused tests
         run: python -m unittest discover -s tests -v
+      - name: Read configured Pages URL
+        id: pages
+        if: github.event_name == 'schedule' || !inputs.preview_only
+        uses: actions/configure-pages@v5
+        with:
+          enablement: false
       - name: Preview current Steam offers
         if: github.event_name == 'workflow_dispatch' && inputs.preview_only
         run: python -m steam_daily
-      - name: Send daily WeChat digest
+      - name: Prepare the webpage and one WeChat summary
         if: github.event_name == 'schedule' || !inputs.preview_only
         env:
+          SITE_URL: ${{ steps.pages.outputs.base_url }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python -m steam_daily --prepare-send --restore --site-url "$SITE_URL"
+      - name: Upload complete public webpage
+        if: github.event_name == 'schedule' || !inputs.preview_only
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: reports/site
+      - name: Deploy the webpage before sending
+        id: deployment
+        if: github.event_name == 'schedule' || !inputs.preview_only
+        uses: actions/deploy-pages@v4
+      - name: Send ONE daily WeChat summary
+        if: github.event_name == 'schedule' || !inputs.preview_only
+        env:
+          DEPLOYED_URL: ${{ steps.deployment.outputs.page_url }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           PUSHPLUS_SECRET_KEY: ${{ secrets.PUSHPLUS_SECRET_KEY }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: python -m steam_daily --send --restore
-      - name: Preserve sending journal even after a failed run
+        run: python -m steam_daily --send --deployed-url "$DEPLOYED_URL"
+      - name: Preserve journal and snapshot even after a failed run
         if: always() && hashFiles('state/state.json') != ''
         uses: actions/upload-artifact@v4
         with:
           name: steam-daily-state-${{ github.run_id }}-${{ github.run_attempt }}
-          path: state/state.json
+          path: state/
           retention-days: 30
           if-no-files-found: error
       - name: Save full report and previews
