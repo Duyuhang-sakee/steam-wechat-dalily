@@ -45,10 +45,6 @@ def validate_state(state):
             raise ValueError('Sending journal is missing a receipt')
     if len(json.dumps(state, ensure_ascii=False).encode('utf-8')) > 4_500_000:
         raise ValueError('Sending journal exceeds artifact size budget')
-    if 'notification_id' in state and (state.get('mode') != MODE
-            or not isinstance(state['notification_id'], str)
-            or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', state['notification_id'])):
-        raise ValueError('Invalid manual notification identifier')
     if 'mode' in state:
         if (state['mode'] != MODE or len(pages) != 1
                 or not isinstance(state.get('site_url'), str)
@@ -82,8 +78,8 @@ def save_json(path, data):
     os.replace(temporary, path)
 
 
-def restore_state(http, path, snapshot_path=None, *, preferred_run_id=''):
-    """Restore this manual run's journal when available, otherwise the latest saved journal."""
+def restore_state(http, path, snapshot_path=None):
+    """Restore the latest saved journal and its bound snapshot."""
     repository = os.environ.get('GITHUB_REPOSITORY')
     token = os.environ.get('GITHUB_TOKEN')
     if not repository or not token:
@@ -105,9 +101,7 @@ def restore_state(http, path, snapshot_path=None, *, preferred_run_id=''):
         if data.get('total_count', 0) > len(data['artifacts']):
             raise FetchError('No journal found among recent artifacts; inspect before sending')
         return
-    own_run = [a for a in candidates if preferred_run_id and a['name'].startswith(
-        f'steam-daily-state-{preferred_run_id}-')]
-    artifact = max(own_run or candidates, key=lambda item: item['id'])
+    artifact = max(candidates, key=lambda item: item['id'])
     content = http.request(base + f'/{artifact["id"]}/zip', headers=headers, binary=True)
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as archive:

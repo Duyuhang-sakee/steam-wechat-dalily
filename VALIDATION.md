@@ -1,5 +1,30 @@
 # 本地验证记录
 
+## 2026-10-13：删除临时测试入口，恢复正式定时日报
+
+哥大确认网页报告已经可以打开，要求删除测试入口并每天早上09:30运行。本次按Refactoring清理：删除Actions的“仅生成预览”“测试重复推送”输入、单独预览步骤、NOTIFICATION_ID和--notification-id参数；定时运行与正常手动运行统一执行准备、部署、核验与推送。
+
+保留每天UTC01:30的cron `30 1 * * *`，对应北京时间09:30。配置上传到默认分支master且工作流启用后生效；无需本机常开。README补充Actions启用和正常手动重试步骤。09:30是计划启动时间，调度、采集及发布会使收到微信的时间延后。
+
+修改文件：
+- .github/workflows/daily.yml：移除测试输入、预览步骤和临时发送参数，保留正式手动运行、定时、串行执行和失败产物保存。
+- steam_daily/__main__.py：移除新测试编号重建通知的分支和CLI参数，沿用每日去重。
+- steam_daily/delivery.py：移除手动编号校验和按编号优先恢复，统一恢复最新可用流水；兼容旧测试状态中的额外元数据。
+- tests/test_report.py、tests/test_delivery.py：移除临时重复推送测试，新增旧测试artifact去重与次日采集/发送回归。
+- README.md、DESIGN.md、VALIDATION.md：正式运行及定时设置说明，保留此前验证记录作为历史。
+
+实际验证：
+- 报告与投递流程针对性回归通过。
+- python -X utf8 -m unittest discover -s tests -v：52项全部通过，包含本地真实HTTP链路测试。
+- 新回归确认旧测试artifact中的accepted状态、receipt和attempts完整恢复，未产生新的发送；昨日流水不影响今天重新采集和创建新通知，同日再跑仍去重。
+- python -X utf8 -m compileall -q steam_daily tests：通过。
+- YAML解析与配置核对通过：cron保持北京时间09:30、workflow_dispatch无测试输入、正常步骤无预览条件、先部署后发送、失败仍保存状态和报告。
+- IDEA检查修改的生产Python、测试和工作流文件无错误。
+- git diff --check：通过，仅Windows换行转换提示。
+- Python测试和Git检查通过IDEA内置终端执行，当前项目没有Python运行配置。
+
+本轮未执行真实微信发送、远程部署、提交或推送；已有发送记录和远端产物未修改。以下记录描述此前阶段，包含本次已经删除的临时测试功能。
+
 ## 2026-10-13：手动测试允许重复推送
 
 哥大明确要求测试阶段解除同一天只能发一条的限制。本次按Small Feature实现：新的手动Run workflow默认准备并提交一个页面入口，可以当天重复；复用经过绑定验证的当天快照。同一运行的Re-run jobs恢复原发送记录，自动日报及关闭测试选项的手动运行沿用每日去重。
