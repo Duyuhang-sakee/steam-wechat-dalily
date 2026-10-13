@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="每天更新的 Steam 国区限免与五折以上优惠，带封面、价格与领取截止时间。">
+  <title>Steam 优惠晨报</title>
+  <style>@@STYLE@@</style>
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="./">S<span>Steam 优惠晨报</span></a><span class="edition">每日 09:30 · 国区</span></header>
+  <main>
+    <section class="hero">
+      <div class="eyebrow"><span class="pulse"></span> 今日优惠，一页看全</div>
+      <h1>好游戏，<br><span>好价格。</span></h1>
+      <p class="intro">限时永久领取与五折以上优惠。找到想玩的，点开封面直达 Steam。</p>
+      <div class="capture"><span id="capture"></span><span class="tag">北京时间</span></div>
+      <div class="metrics"><div><strong id="free-count">—</strong><span>限时永久领取</span></div><div><strong id="discount-count">—</strong><span>五折及以上商品</span></div><div><strong>1</strong><span>条微信每日摘要</span></div></div>
+    </section>
+    <div id="notice" class="notice" hidden></div>
+    <section class="catalog" aria-label="优惠商品目录">
+      <div class="catalog-heading"><div><div class="eyebrow">发现下一款想玩的</div><h2>优惠目录</h2></div><a href="offers.json" class="data-link" download>下载完整名单 ↓</a></div>
+      <div class="toolbar">
+        <label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="搜索游戏、DLC 或礼包名称…" aria-label="搜索商品名称"></label>
+        <label class="select-label">排序<select id="sort"><option value="featured">限免与精选优先</option><option value="discount">折扣从高到低</option><option value="price">价格从低到高</option><option value="reviews">评测量从多到少</option><option value="deadline">限免即将结束</option><option value="name">名称 A → Z</option></select></label>
+      </div>
+      <div class="filters">
+        <div class="tabs" role="group" aria-label="商品类别">
+          <button type="button" class="active" data-filter="all" aria-pressed="true">全部 <span id="all-tab"></span></button>
+          <button type="button" data-filter="free" aria-pressed="false">限时免费 <span id="free-tab"></span></button>
+          <button type="button" data-filter="featured" aria-pressed="false">折扣精选</button>
+          <button type="button" data-filter="discount" aria-pressed="false">五折以上</button>
+        </div>
+        <label class="select-label">最低折扣<select id="threshold"><option value="50">50%</option><option value="70">70%</option><option value="80">80%</option><option value="90">90%</option></select></label>
+      </div>
+      <div class="results-meta"><span id="result-count" role="status" aria-live="polite"></span><span>包含游戏、DLC、软件与礼包</span></div>
+      <div id="grid" class="grid"></div>
+      <p id="empty" class="empty" hidden>没有找到匹配的商品，试试其他名称或筛选条件。</p>
+      <nav class="pagination" aria-label="商品分页"><button id="prev" type="button">← 上一页</button><span id="page-label"></span><button id="next" type="button">下一页 →</button></nav>
+    </section>
+    <details class="notes"><summary>数据范围与活动时间</summary><p>每天北京时间 09:30 开始采集一次；本页显示采集时的公开国区优惠。GitHub 任务可能延迟，价格、可购买状态和领取条件以 Steam 商店为准。</p><p>限免需核验为限时永久领取；免费周末、长期免费与 Demo 不计入限免。未提供可靠活动时间的商品显示“未公开”。精选优先选择好评率≥80%、评测量≥500的商品，再按折扣补足，不代表个性化推荐。</p><p>商品封面来自 Steam 商店；缺失或加载失败时使用占位图。部分 DLC 和礼包需要拥有本体。两次采集之间的短活动可能遗漏。</p><ul id="warnings"></ul></details>
+    <footer>Steam 优惠晨报<span>每天一条微信，完整优惠在这里。</span></footer>
+    <noscript><p class="notice">请启用 JavaScript 查看和筛选商品，或下载上方的完整 JSON 名单。</p></noscript>
+  </main>
+  <script id="offer-data" type="application/json">@@DATA@@</script>
+  <script>@@SCRIPT@@</script>
+</body>
+</html>
