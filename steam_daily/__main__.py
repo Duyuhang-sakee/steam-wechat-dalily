@@ -76,9 +76,19 @@ def send_prepared(args, config, http):
             or manifest.get('captured_at') != state['captured_at']):
         raise FetchError('Published website is not the prepared snapshot; no message sent')
     client = PushPlus(http, token, os.environ.get('PUSHPLUS_SECRET_KEY', '').strip(), gap=config['send_gap_seconds'])
+    page = state['pages'][0]
+    previous_attempts = page['attempts']
     deliver(state, path, client)
-    verified = state['pages'][0]['status'] == 'delivered'
-    print('Final delivery verified.' if verified else 'PushPlus accepted the single page notification; WeChat delivery not verified.', flush=True)
+    verified = page['status'] == 'delivered'
+    if page['attempts'] > previous_attempts:
+        result = ('final WeChat delivery verified.' if verified
+                  else 'PushPlus accepted it, but WeChat delivery is not verified.')
+        print('Submitted ONE new page notification in this run; ' + result, flush=True)
+    elif verified:
+        print("No new notification submitted: today's previous notification is verified delivered; duplicate send skipped.", flush=True)
+    else:
+        print("No new notification submitted: PushPlus already accepted today's notification; duplicate send skipped. "
+              "Final WeChat delivery remains unverified; check PushPlus message history.", flush=True)
 
 
 def run(args):
@@ -113,7 +123,8 @@ def run(args):
             save_json(state_path, old)
         notification = build_page_notification(datetime.fromisoformat(snapshot['captured_at']), url)
         write_reports(args.report_dir, snapshot, config, notification)
-        print('Restored the same daily snapshot and single-message journal.', flush=True)
+        print(f'Reused today\'s saved snapshot (captured at {old["captured_at"]}); '
+              'no Steam rescan in this run. Rebuilt report files from saved data.', flush=True)
         return
     if args.snapshot:
         if args.prepare_send:

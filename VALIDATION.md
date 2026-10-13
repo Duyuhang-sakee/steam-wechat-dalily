@@ -1,5 +1,25 @@
 # 本地验证记录
 
+## 2026-10-13：同日重跑日志修正
+
+线上诊断：运行 [Steam 微信晨报 #7](https://github.com/Duyuhang-sakee/steam-wechat-dalily/actions/runs/38339765397) 的 digest 用时41秒。准备日志显示恢复当天快照；发送正文没有实际发送后的 Page 状态日志，仅有旧版固定的“PushPlus accepted”输出。结合未配置 PUSHPLUS_SECRET_KEY 和投递路径，确认本次复用了当天已接收记录，跳过新POST，不是一次新的全站采集。摘要页有3个产物：github-pages、steam-daily-report-38339765397-1、steam-daily-state-38339765397-1。
+
+修正范围：
+- steam_daily/__main__.py：恢复日志显示原采集时间和本次未重新扫描；根据实际尝试次数变化区分新提交与去重跳过，另行说明最终送达是否已验证。
+- tests/test_report.py：真实本地HTTP首次提交及同日重跑的请求次数与日志断言；已接收、待确认、已送达和确认失败后重试的日志回归。
+- README.md：同日快速重跑的原因、成功状态的含义及产物入口。
+- VALIDATION.md：本次诊断与验证记录。
+
+实际验证：
+- 修改生产代码前，针对性回归出现7处断言失败（含5个子场景），检出旧日志不能区分提交与跳过。
+- 修正后 python -X utf8 -m unittest discover -s tests -p test_report.py -v：18项通过。
+- python -X utf8 -m unittest discover -s tests -v：50项通过。
+- python -X utf8 -m compileall -q steam_daily tests：通过。
+- IDEA错误检查：两个修改的Python文件均无错误。
+- git diff --check：通过，仅Windows换行转换提示。上述Python检查及Git差异检查通过IDEA内置终端执行，项目没有Python运行配置。
+
+未修改每日去重或失败重试规则；未清除历史记录、真实补发微信、提交或推送。本次日志只能确认此前平台接收及本次跳过，不能证明此前微信最终送达。
+
 ## 2026-10-13：微信只推送完整页面入口
 
 任务：去掉微信商品摘要，以一个完整网页链接通知哥大查看带封面、搜索和筛选的优惠目录。

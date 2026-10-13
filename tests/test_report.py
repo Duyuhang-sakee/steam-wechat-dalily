@@ -6,6 +6,7 @@ import re
 import tempfile
 import unittest
 import zipfile
+from contextlib import redirect_stdout
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -174,9 +175,18 @@ class PipelineTests(unittest.TestCase):
             http.json = local_request
             with patch.dict(os.environ, {'PUSHPLUS_TOKEN': 'DUMMY', 'PUSHPLUS_SECRET_KEY': ''}), \
                     patch('steam_daily.__main__.Http', return_value=http):
-                run(self.send_args())
-                run(self.send_args())
+                first_output = io.StringIO()
+                rerun_output = io.StringIO()
+                with redirect_stdout(first_output):
+                    run(self.send_args())
+                with redirect_stdout(rerun_output):
+                    run(self.send_args())
         self.assertEqual(len(requests), 1)
+        self.assertIn('Submitted ONE new page notification in this run', first_output.getvalue())
+        self.assertIn('WeChat delivery is not verified', first_output.getvalue())
+        self.assertIn('No new notification submitted', rerun_output.getvalue())
+        self.assertIn('duplicate send skipped', rerun_output.getvalue())
+        self.assertIn('delivery remains unverified', rerun_output.getvalue())
         self.assertEqual(requests[0]['template'], 'html')
         self.assertEqual(requests[0]['channel'], 'wechat')
         content = requests[0]['content']
@@ -185,6 +195,38 @@ class PipelineTests(unittest.TestCase):
         self.assertNotIn('Game 1', content)
         self.assertNotIn('折扣精选', content)
         self.assertNotIn('OLD DIGEST', content)
+
+    def test_verified_delivery_log_distinguishes_new_submission_from_previous_receipt(self):
+        for status, final_statuses, expected_sends in (
+                ('ready', [2], 1), ('accepted', [2], 0), ('pending', [2], 0),
+                ('delivered', [], 0), ('accepted', [3, 2], 1)):
+            with self.subTest(status=status, final_statuses=final_statuses):
+                state = self.prepare()
+                page = state['pages'][0]
+                page.update(status=status, attempts=0 if status == 'ready' else 1)
+                if status != 'ready':
+                    page['receipt'] = 'previous-receipt'
+                save_json(self.args.state, state)
+                http = Mock()
+                http.json.return_value = self.manifest(state)
+                client = Mock(secret_key='DUMMY')
+                client.send.return_value = 'new-receipt'
+                client.status.side_effect = final_statuses
+                output = io.StringIO()
+                with patch.dict(os.environ, {'PUSHPLUS_TOKEN': 'DUMMY', 'PUSHPLUS_SECRET_KEY': 'DUMMY'}), \
+                        patch('steam_daily.__main__.Http', return_value=http), \
+                        patch('steam_daily.__main__.PushPlus', return_value=client), \
+                        patch('steam_daily.delivery.time.sleep'), redirect_stdout(output):
+                    run(self.send_args())
+                self.assertEqual(client.send.call_count, expected_sends)
+                self.assertEqual(json.loads(Path(self.args.state).read_text())['pages'][0]['status'], 'delivered')
+                if expected_sends:
+                    self.assertIn('Submitted ONE new page notification in this run', output.getvalue())
+                    self.assertIn('final WeChat delivery verified', output.getvalue())
+                else:
+                    self.assertIn('No new notification submitted', output.getvalue())
+                    self.assertIn('previous notification is verified delivered', output.getvalue())
+                    self.assertIn('duplicate send skipped', output.getvalue())
 
     def test_wrong_deployment_or_stale_public_snapshot_never_sends(self):
         self.prepare()
@@ -202,9 +244,12 @@ class PipelineTests(unittest.TestCase):
 
     def test_same_day_prepare_reuses_saved_snapshot_without_rescanning(self):
         state = self.prepare()
-        with patch('steam_daily.__main__.collect') as collect:
+        output = io.StringIO()
+        with patch('steam_daily.__main__.collect') as collect, redirect_stdout(output):
             run(self.args)
         collect.assert_not_called()
+        self.assertIn('no Steam rescan in this run', output.getvalue())
+        self.assertIn(state['captured_at'], output.getvalue())
         self.assertEqual(json.loads(Path(self.args.state).read_text()), state)
         saved = json.loads((self.root / 'state/offers.json').read_text(encoding='utf-8'))
         saved['discounts'][0]['current'] = 'CHANGED'
