@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -69,11 +70,23 @@ def send_prepared(args, config, http):
     token = os.environ.get('PUSHPLUS_TOKEN', '').strip()
     if not token:
         raise ValueError('Add PUSHPLUS_TOKEN to GitHub Actions Secrets before sending')
-    # A successful Pages deployment alone may precede CDN propagation. Check the public version too.
-    manifest = http.json(deployed + 'manifest.json?digest=' + state['snapshot_sha256'])
-    if (not isinstance(manifest, dict) or manifest.get('schema') != 1
-            or manifest.get('snapshot_sha256') != state['snapshot_sha256']
-            or manifest.get('captured_at') != state['captured_at']):
+    # A successful Pages deployment alone may precede CDN propagation. Poll the public
+    # version briefly instead of failing the send on the first stale response.
+    published = False
+    for attempt in range(5):
+        try:
+            manifest = http.json(deployed + 'manifest.json?digest=' + state['snapshot_sha256'])
+        except FetchError:
+            manifest = None
+        if (isinstance(manifest, dict) and manifest.get('schema') == 1
+                and manifest.get('snapshot_sha256') == state['snapshot_sha256']
+                and manifest.get('captured_at') == state['captured_at']):
+            published = True
+            break
+        if attempt < 4:
+            print(f'Deployed snapshot not visible yet; waiting 20s before check {attempt + 2} of 5.', flush=True)
+            time.sleep(20)
+    if not published:
         raise FetchError('Published website is not the prepared snapshot; no message sent')
     client = PushPlus(http, token, os.environ.get('PUSHPLUS_SECRET_KEY', '').strip(), gap=config['send_gap_seconds'])
     page = state['pages'][0]

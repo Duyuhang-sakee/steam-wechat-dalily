@@ -236,7 +236,8 @@ class PipelineTests(unittest.TestCase):
             args = self.send_args()
             args.deployed_url = deployed
             with patch.dict(os.environ, {'PUSHPLUS_TOKEN': 'DUMMY'}), \
-                    patch('steam_daily.__main__.Http', return_value=http), patch('steam_daily.__main__.PushPlus') as provider:
+                    patch('steam_daily.__main__.Http', return_value=http), patch('steam_daily.__main__.PushPlus') as provider, \
+                    patch('steam_daily.__main__.time.sleep'):
                 with self.assertRaises((ValueError, FetchError)):
                     run(args)
                 provider.assert_not_called()

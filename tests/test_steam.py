@@ -128,19 +128,20 @@ class SteamTests(unittest.TestCase):
         http.json.return_value = response([])
         self.assertEqual(collect_search(http, self.config)[0], [])
 
-    def test_volatile_scan_restarts_once_without_merging_old_items(self):
-        from unittest.mock import Mock
+    def test_volatile_scan_restarts_without_merging_old_items(self):
+        from unittest.mock import Mock, patch
         http = Mock()
         http.json.side_effect = [response([search_row(1)], total=2),
                                  response([search_row(2)], start=1, total=3),
                                  response([search_row(4)], total=1)]
-        _, discounts, stats, _ = collect(http, self.config)
+        with patch('steam_daily.steam.time.sleep'):
+            _, discounts, stats, _ = collect(http, self.config)
         self.assertEqual([o.key for o in discounts], ['app:4'])
         self.assertEqual(stats['total'], 1)
         self.assertEqual(http.json.call_count, 3)
         http.json.side_effect = [response([search_row(1)], total=2),
-                                 response([search_row(2)], start=1, total=3)] * 2
-        with self.assertRaises(FetchError):
+                                 response([search_row(2)], start=1, total=3)] * 3
+        with patch('steam_daily.steam.time.sleep'), self.assertRaises(FetchError):
             collect(http, self.config)
 
     def test_structured_free_uses_matching_item_and_verified_end(self):

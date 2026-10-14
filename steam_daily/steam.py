@@ -249,14 +249,16 @@ def collect_search(http, config):
 
 
 def collect(http, config):
-    for attempt in range(2):
+    # The specials catalog shifts under an in-flight scan; restart up to twice.
+    for attempt in range(3):
         try:
             offers, stats = collect_search(http, config)
             break
         except ScanChanged:
-            if attempt:
+            if attempt == 2:
                 raise
-            print('Steam results changed; restarting the complete scan once.', flush=True)
+            time.sleep(30)
+            print(f'Steam results changed; restarting the complete scan (attempt {attempt + 2} of 3).', flush=True)
     now = datetime.now(timezone.utc)
     freebies, discounts, warnings = [], [], []
     if stats['unpriced']:
