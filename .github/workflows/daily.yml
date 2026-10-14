@@ -1,4 +1,4 @@
-name: Steam 微信晨报
+name: Steam 优惠晨报
 
 on:
   schedule:
@@ -35,7 +35,7 @@ jobs:
         uses: actions/configure-pages@v5
         with:
           enablement: false
-      - name: Prepare the webpage and one WeChat page notification
+      - name: Prepare the webpage and daily page notifications
         env:
           SITE_URL: ${{ steps.pages.outputs.base_url }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -47,11 +47,13 @@ jobs:
       - name: Deploy the webpage before sending
         id: deployment
         uses: actions/deploy-pages@v4
-      - name: Send ONE WeChat page notification
+      - name: Send one notification per configured channel
         env:
           DEPLOYED_URL: ${{ steps.deployment.outputs.page_url }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           PUSHPLUS_SECRET_KEY: ${{ secrets.PUSHPLUS_SECRET_KEY }}
+          BARK_DEVICE_KEY: ${{ secrets.BARK_DEVICE_KEY }}
+          BARK_SERVER_URL: ${{ vars.BARK_SERVER_URL }}
         run: python -m steam_daily --send --deployed-url "$DEPLOYED_URL"
       - name: Preserve journal and snapshot even after a failed run
         if: always() && hashFiles('state/state.json') != ''

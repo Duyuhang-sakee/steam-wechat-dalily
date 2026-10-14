@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .delivery import PushPlus, deliver, refresh_notification, restore_state, save_json, validate_state
+from .delivery import Bark, PushPlus, deliver, deliver_bark, refresh_notification, restore_state, save_json, validate_state
 from .http import FetchError, Http
 from .report import BEIJING, MODE, build_page_notification, build_site, site_url, snapshot_hash, unpack_snapshot
 from .steam import collect
@@ -61,15 +61,17 @@ def send_prepared(args, config, http):
     now = datetime.now(BEIJING)
     if state['day'] != now.strftime('%Y-%m-%d') or now.timestamp() * 1000 >= state['expires_ms']:
         raise ValueError('Prepared digest expired; prepare and deploy a fresh snapshot')
+    bark_key = os.environ.get('BARK_DEVICE_KEY', '').strip()
     if state['suppressed']:
         print('Legacy messages were already attempted today. Remaining pages stopped; new page notification starts tomorrow.', flush=True)
-        return
+        if not bark_key:
+            return
     deployed = site_url(args.deployed_url)
     if deployed != state['site_url']:
         raise ValueError('Deployed Pages URL does not match the prepared page notification')
     token = os.environ.get('PUSHPLUS_TOKEN', '').strip()
-    if not token:
-        raise ValueError('Add PUSHPLUS_TOKEN to GitHub Actions Secrets before sending')
+    if not token and not bark_key:
+        raise ValueError('Add PUSHPLUS_TOKEN or BARK_DEVICE_KEY to GitHub Actions Secrets before sending')
     # A successful Pages deployment alone may precede CDN propagation. Poll the public
     # version briefly instead of failing the send on the first stale response.
     published = False
@@ -88,20 +90,33 @@ def send_prepared(args, config, http):
             time.sleep(20)
     if not published:
         raise FetchError('Published website is not the prepared snapshot; no message sent')
-    client = PushPlus(http, token, os.environ.get('PUSHPLUS_SECRET_KEY', '').strip(), gap=config['send_gap_seconds'])
-    page = state['pages'][0]
-    previous_attempts = page['attempts']
-    deliver(state, path, client)
-    verified = page['status'] == 'delivered'
-    if page['attempts'] > previous_attempts:
-        result = ('final WeChat delivery verified.' if verified
-                  else 'PushPlus accepted it, but WeChat delivery is not verified.')
-        print('Submitted ONE new page notification in this run; ' + result, flush=True)
-    elif verified:
-        print("No new notification submitted: today's previous notification is verified delivered; duplicate send skipped.", flush=True)
-    else:
-        print("No new notification submitted: PushPlus already accepted today's notification; duplicate send skipped. "
-              "Final WeChat delivery remains unverified; check PushPlus message history.", flush=True)
+    errors = []
+    if token and not state['suppressed']:
+        try:
+            client = PushPlus(http, token, os.environ.get('PUSHPLUS_SECRET_KEY', '').strip(), gap=config['send_gap_seconds'])
+            page = state['pages'][0]
+            previous_attempts = page['attempts']
+            deliver(state, path, client)
+            verified = page['status'] == 'delivered'
+            if page['attempts'] > previous_attempts:
+                result = ('final WeChat delivery verified.' if verified
+                          else 'PushPlus accepted it, but WeChat delivery is not verified.')
+                print('Submitted ONE new page notification in this run; ' + result, flush=True)
+            elif verified:
+                print("No new notification submitted: today's previous notification is verified delivered; duplicate send skipped.", flush=True)
+            else:
+                print("No new notification submitted: PushPlus already accepted today's notification; duplicate send skipped. "
+                      "Final WeChat delivery remains unverified; check PushPlus message history.", flush=True)
+        except FetchError as error:
+            errors.append(f'WeChat: {error}')
+    if bark_key:
+        try:
+            bark = Bark(http, bark_key, os.environ.get('BARK_SERVER_URL', '').strip() or 'https://api.day.app')
+            deliver_bark(state, path, bark)
+        except (FetchError, ValueError) as error:
+            errors.append(f'Bark: {error}')
+    if errors:
+        raise FetchError('; '.join(errors))
 
 
 def run(args):
@@ -156,7 +171,7 @@ def run(args):
         }
     content = build_page_notification(now, url)
     write_reports(args.report_dir, snapshot, config, content)
-    print(f'Report complete: {len(freebies)} free, {len(discounts)} discounted; ONE WeChat page notification.', flush=True)
+    print(f'Report complete: {len(freebies)} free, {len(discounts)} discounted; ONE page notification per configured channel.', flush=True)
     if not args.prepare_send:
         print(f'Preview only: webpage and page notification in {args.report_dir}; no deployment or messages.', flush=True)
         return
@@ -181,7 +196,7 @@ def run(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='One daily WeChat page notification and a complete Steam cover gallery')
+    parser = argparse.ArgumentParser(description='Daily WeChat/Bark page notifications and a complete Steam cover gallery')
     parser.add_argument('--config', default='config.json')
     parser.add_argument('--report-dir', default='reports')
     parser.add_argument('--state', default='state/state.json')
@@ -199,7 +214,7 @@ def main():
         run(args)
     except (FetchError, ValueError, KeyError, TypeError, OSError) as error:
         message = str(error)
-        for name in ('PUSHPLUS_TOKEN', 'PUSHPLUS_SECRET_KEY', 'GITHUB_TOKEN'):
+        for name in ('PUSHPLUS_TOKEN', 'PUSHPLUS_SECRET_KEY', 'BARK_DEVICE_KEY', 'GITHUB_TOKEN'):
             secret = os.environ.get(name, '')
             if secret:
                 message = message.replace(secret, '[redacted]')

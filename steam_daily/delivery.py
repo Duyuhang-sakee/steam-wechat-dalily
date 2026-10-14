@@ -53,6 +53,13 @@ def validate_state(state):
                 or not re.fullmatch(r'[a-f0-9]{64}', state['snapshot_sha256'])
                 or type(state.get('suppressed')) is not bool):
             raise ValueError('Invalid single-message journal')
+    if 'bark' in state:
+        bark = state['bark']
+        if (state.get('mode') != MODE or not isinstance(bark, dict)
+                or bark.get('status') not in ('ready', 'sending', 'accepted', 'failed', 'uncertain')
+                or type(bark.get('attempts')) is not int or not 0 <= bark['attempts'] <= 3
+                or (bark['status'] == 'ready') != (bark['attempts'] == 0)):
+            raise ValueError('Invalid Bark sending journal')
 
 
 def refresh_notification(state):
@@ -125,6 +132,65 @@ def restore_state(http, path, snapshot_path=None):
     if snapshot is not None:
         save_json(snapshot_path, snapshot)
     save_json(path, state)
+
+
+class Bark:
+    def __init__(self, http, device_key, server_url='https://api.day.app'):
+        self.http = http
+        self.device_key = device_key
+        try:
+            self.endpoint = site_url(server_url) + 'push'
+        except ValueError:
+            raise ValueError('Provide an HTTPS BARK_SERVER_URL without credentials, query or fragment') from None
+
+    def send(self, day, url):
+        response = self.http.json(self.endpoint, {
+            'device_key': self.device_key, 'title': f'Steam优惠晨报 {day}',
+            'body': '今日 Steam 国区优惠已更新，点击查看完整优惠页面。',
+            'url': site_url(url) + '?day=' + day, 'group': 'Steam 优惠晨报',
+            'level': 'active', 'isArchive': '1',
+        }, retry=False)
+        code = response.get('code') if isinstance(response, dict) else None
+        if type(code) is int and code == 200:
+            return
+        # Server messages can echo the key. Only explicit parameter/auth rejection
+        # is safe to retry; a backend/APNs failure may already have sent the push.
+        if type(code) is int and code in (400, 401, 403, 404, 413, 422):
+            raise SendRejected(f'Bark rejected request (code {code})')
+        raise FetchError('Bark response invalid or unsuccessful; result unknown')
+
+
+def deliver_bark(state, path, client):
+    """Track Bark acceptance separately from WeChat receipts in the same journal."""
+    validate_state(state)
+    if state.get('mode') != MODE:
+        raise ValueError('Bark requires a prepared page notification')
+    bark = state.setdefault('bark', {'status': 'ready', 'attempts': 0})
+    if bark['status'] == 'accepted':
+        print("Bark: today's notification already accepted; duplicate send skipped.", flush=True)
+        return
+    if bark['status'] in ('sending', 'uncertain'):
+        raise FetchError('Bark has an uncertain previous send; inspect before resetting state')
+    if bark['attempts'] >= 3:
+        raise FetchError('Bark exhausted its confirmed-failure retries')
+    if datetime.now(BEIJING).timestamp() * 1000 >= state['expires_ms']:
+        raise FetchError('Daily digest expired; generate a fresh daily snapshot')
+    bark.update(status='sending', attempts=bark['attempts'] + 1)
+    save_json(path, state)
+    try:
+        client.send(state['day'], state['site_url'])
+    except SendRejected:
+        bark['status'] = 'failed'
+        save_json(path, state)
+        raise
+    except FetchError:
+        bark['status'] = 'uncertain'
+        save_json(path, state)
+        raise
+    bark['status'] = 'accepted'
+    save_json(path, state)
+    print('Bark: submitted ONE new page notification; server accepted it, '
+          'but iPhone delivery is not verified.', flush=True)
 
 
 class PushPlus:

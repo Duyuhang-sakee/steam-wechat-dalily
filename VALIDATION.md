@@ -1,5 +1,27 @@
 # 本地验证记录
 
+## 2026-10-14：新增 iPhone Bark 推送
+
+任务分类：Small Feature。配置 BARK_DEVICE_KEY 后发送普通 Bark 通知，点击打开带日报日期的完整优惠网页。支持微信和 Bark 同时启用，也支持只配置 Bark。两个渠道独立记录发送状态，一方投递失败仍尝试另一方，先发布和核验网页的顺序保持一致。
+
+修改文件：
+- steam_daily/delivery.py：Bark JSON POST 客户端、独立发送状态与验证、意图持久化、同日去重和有限确认失败重试。
+- steam_daily/__main__.py：按凭证选择渠道、分别执行并汇总投递错误、Bark 密钥错误信息脱敏。
+- .github/workflows/daily.yml：仅发送步骤注入 BARK_DEVICE_KEY Secret 和可选 BARK_SERVER_URL Variable，保留 09:30 定时、串行作业和失败产物保存。
+- tests/test_bark.py：19 项 Bark 协议、HTTP 投递、状态和完整发送流程测试。
+- tests/test_report.py：原微信流程测试隔离宿主机可能配置的 Bark 环境变量。
+- README.md、DESIGN.md、docs/superpowers/specs/2026-10-14-bark-design.md：iPhone 配置、增量设计和状态/失败边界。
+- VALIDATION.md：本次实际验证记录。
+
+实际验证：
+- 首轮 Bark 专项测试 17 项通过；随后补充跨日重建和无渠道配置用例。
+- python -X utf8 -m unittest discover -s tests -v：71 项全部通过，包含最终 19 项 Bark 测试及既有 52 项回归。
+- python -X utf8 -m compileall -q steam_daily tests：通过。本地 Python 3.14.6；Actions 仍配置 Python 3.12，本轮未运行远端 Actions。
+- YAML 解析与断言通过：09:30 定时、正常手动入口、先部署后发送、Bark 密钥只传入发送步骤、可选服务器变量、串行执行和失败后保存状态。
+- git diff --check：通过，Git 提示 Windows 换行转换。HTTP 错误路径在 Python 3.14 下出现现有 HTTPError 资源自动清理警告，不影响测试通过。
+
+所有 HTTP 投递测试使用本地服务器和虚拟密钥，未执行真实 Bark / 微信推送或远程部署。本轮未提交或推送代码。当前目录未在 IDEA 中打开，IDEA MCP 返回项目不可访问；按哥大允许的失败回退规则使用本地工具完成实现和验证。
+
 ## 2026-10-13：删除临时测试入口，恢复正式定时日报
 
 哥大确认网页报告已经可以打开，要求删除测试入口并每天早上09:30运行。本次按Refactoring清理：删除Actions的“仅生成预览”“测试重复推送”输入、单独预览步骤、NOTIFICATION_ID和--notification-id参数；定时运行与正常手动运行统一执行准备、部署、核验与推送。

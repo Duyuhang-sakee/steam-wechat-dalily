@@ -93,6 +93,9 @@ class ReportTests(unittest.TestCase):
 
 class PipelineTests(unittest.TestCase):
     def setUp(self):
+        environment = patch.dict(os.environ, {'BARK_DEVICE_KEY': '', 'BARK_SERVER_URL': ''})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.args = argparse.Namespace(config='config.json', report_dir=str(self.root / 'reports'),
