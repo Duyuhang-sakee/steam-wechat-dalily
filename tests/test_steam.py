@@ -40,6 +40,9 @@ class SteamTests(unittest.TestCase):
     def setUp(self):
         self.config = json.loads(Path('config.json').read_text(encoding='utf-8'))
         self.config.update(page_size=3, request_gap_seconds=0)
+        sleep = patch('steam_daily.steam.time.sleep')
+        sleep.start()
+        self.addCleanup(sleep.stop)
         self.now = datetime(2026, 10, 12, 9, 30, tzinfo=BEIJING)
 
     def offer(self):
@@ -97,16 +100,19 @@ class SteamTests(unittest.TestCase):
                                  response([search_row(4)], start=3, total=4)]
         offers, stats = collect_search(http, self.config)
         self.assertEqual(len(offers), 4)
-        self.assertEqual(stats, {'total': 4, 'pages': 2, 'unpriced': 0})
+        self.assertEqual(stats, {'total': 4, 'pages': 2, 'unpriced': 0,
+                                 'reported_total': 4, 'total_changes': 0, 'duplicates': 0})
         self.assertIn('start=3', http.json.call_args.args[0])
         self.assertIn('sort_by=Name_ASC', http.json.call_args.args[0])
 
-    def test_incomplete_duplicate_and_volatile_search_fail_closed(self):
+    def test_incomplete_and_invalid_search_fail_closed(self):
         from unittest.mock import Mock
         first = response([search_row(i) for i in (1, 2, 3)], total=4)
-        cases = [response([], start=3, total=4), response([search_row(3)], start=3, total=4),
-                 response([search_row(4)], start=3, total=5), response([search_row(4)], start=0, total=4),
-                 {'success': 0}]
+        cases = [response([], start=3, total=4), response([search_row(4)], start=0, total=4),
+                 response([search_row(i) for i in (4, 5, 6, 7)], start=3, total=7),
+                 response([search_row(4)], start=3, total=-1),
+                 response([search_row(4)], start=3, total=True),
+                 response([search_row(4)], start=3, total=0), {'success': 0}]
         for final in cases:
             with self.subTest(final=final):
                 http = Mock()
@@ -128,21 +134,94 @@ class SteamTests(unittest.TestCase):
         http.json.return_value = response([])
         self.assertEqual(collect_search(http, self.config)[0], [])
 
-    def test_volatile_scan_restarts_without_merging_old_items(self):
-        from unittest.mock import Mock, patch
+    def test_single_scan_continues_when_total_grows_and_merges_duplicates(self):
+        from unittest.mock import Mock
+        self.config['page_size'] = 2
         http = Mock()
-        http.json.side_effect = [response([search_row(1)], total=2),
-                                 response([search_row(2)], start=1, total=3),
-                                 response([search_row(4)], total=1)]
-        with patch('steam_daily.steam.time.sleep'):
-            _, discounts, stats, _ = collect(http, self.config)
-        self.assertEqual([o.key for o in discounts], ['app:4'])
-        self.assertEqual(stats['total'], 1)
+        http.json.side_effect = [
+            response([search_row(1), search_row(2)], total=4),
+            response([search_row(2, discount=75, cents=50), search_row(3)], start=2, total=5),
+            response([search_row(4)], start=4, total=5),
+        ]
+        _, discounts, stats, warnings = collect(http, self.config)
+        self.assertEqual({o.key for o in discounts}, {'app:1', 'app:2', 'app:3', 'app:4'})
+        updated = next(o for o in discounts if o.key == 'app:2')
+        self.assertEqual((updated.discount, updated.final_cents), (75, 50))
+        self.assertEqual(stats['total'], 4)
+        self.assertEqual(stats['reported_total'], 5)
+        self.assertEqual(stats['duplicates'], 1)
+        self.assertEqual(stats['total_changes'], 1)
+        self.assertTrue(any('变化' in warning for warning in warnings))
         self.assertEqual(http.json.call_count, 3)
-        http.json.side_effect = [response([search_row(1)], total=2),
-                                 response([search_row(2)], start=1, total=3)] * 3
-        with patch('steam_daily.steam.time.sleep'), self.assertRaises(FetchError):
+        for call, offset in zip(http.json.call_args_list, (0, 2, 4)):
+            self.assertIn(f'start={offset}&', call.args[0])
+
+    def test_single_scan_accepts_empty_tail_after_total_shrinks(self):
+        from unittest.mock import Mock
+        for total in (3, 2, 0):
+            with self.subTest(total=total):
+                http = Mock()
+                http.json.side_effect = [
+                    response([search_row(i) for i in (1, 2, 3)], total=4),
+                    response([], start=3, total=total),
+                ]
+                _, discounts, stats, warnings = collect(http, self.config)
+                self.assertEqual({o.key for o in discounts}, {'app:1', 'app:2', 'app:3'})
+                self.assertEqual(stats['total'], 3)
+                self.assertEqual(stats['reported_total'], total)
+                self.assertEqual(http.json.call_count, 2)
+                self.assertTrue(any('变化' in warning for warning in warnings))
+
+    def test_single_scan_retains_returned_rows_when_total_shrinks(self):
+        from unittest.mock import Mock
+        http = Mock()
+        http.json.side_effect = [
+            response([search_row(i) for i in (1, 2, 3)], total=5),
+            response([search_row(4)], start=3, total=2),
+        ]
+        _, discounts, stats, _ = collect(http, self.config)
+        self.assertEqual({o.key for o in discounts}, {'app:1', 'app:2', 'app:3', 'app:4'})
+        self.assertEqual(stats['total'], 4)
+        self.assertEqual(stats['reported_total'], 2)
+        self.assertEqual(http.json.call_count, 2)
+
+    def test_single_scan_merges_duplicates_even_if_total_does_not_change(self):
+        from unittest.mock import Mock
+        http = Mock()
+        http.json.side_effect = [
+            response([search_row(i) for i in (1, 2, 3)], total=4),
+            response([search_row(3)], start=3, total=4),
+        ]
+        _, discounts, stats, warnings = collect(http, self.config)
+        self.assertEqual({o.key for o in discounts}, {'app:1', 'app:2', 'app:3'})
+        self.assertEqual(stats['total'], 3)
+        self.assertEqual(stats['duplicates'], 1)
+        self.assertEqual(stats['total_changes'], 0)
+        self.assertTrue(any('变化' in warning for warning in warnings))
+        self.assertEqual(http.json.call_count, 2)
+
+    def test_single_scan_stops_at_page_limit_even_if_total_keeps_growing(self):
+        from unittest.mock import Mock
+        self.config['max_pages'] = 2
+        http = Mock()
+        http.json.side_effect = [
+            response([search_row(1)], total=2),
+            response([search_row(2)], start=1, total=3),
+        ]
+        with self.assertRaisesRegex(FetchError, 'max_pages'):
             collect(http, self.config)
+        self.assertEqual(http.json.call_count, 2)
+
+    def test_single_scan_does_not_restart_after_fetch_failure(self):
+        from unittest.mock import Mock
+        http = Mock()
+        http.json.side_effect = [
+            response([search_row(i) for i in (1, 2, 3)], total=4),
+            FetchError('Steam unavailable'),
+        ]
+        with self.assertRaisesRegex(FetchError, 'Steam unavailable'):
+            collect(http, self.config)
+        self.assertEqual(http.json.call_count, 2)
 
     def test_structured_free_uses_matching_item_and_verified_end(self):
         offer = self.offer()

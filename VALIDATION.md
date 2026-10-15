@@ -1,5 +1,26 @@
 # 本地验证记录
 
+## 2026-10-15：Steam 单轮采集，允许目录变化
+
+任务分类：Bug Fix。哥大明确要求只扫描一轮，接受优惠目录在采集期间变化。删除 ScanChanged 和三轮重扫；分页偏移只按实际返回行数向前移动，以当前页报告总数判断结束。重复商品按类型和 ID 合并，保留后一次数据；目录缩小导致末尾为空时正常完成。保留错误响应、错误偏移、提前空页、分页上限和单个 GET 的网络重试。
+
+修改文件：
+- steam_daily/steam.py：单轮分页、动态结束条件、去重、采集统计和目录变化提示。
+- tests/test_steam.py：替换旧重扫预期，覆盖总数增长和缩小、重复商品更新、空尾页、持续增长时的分页上限、请求失败与非法响应。
+- README.md、DESIGN.md：说明实际采集范围和动态目录可能漏项的边界。
+- VALIDATION.md：本次验证记录。
+
+实际验证：
+- 新单轮回归用例先在旧实现上失败，确认数量变化会触发额外扫描；修复后通过。
+- python -X utf8 -m unittest discover -s tests -p test_steam.py -v：20 项全部通过。
+- python -X utf8 -m unittest discover -s tests -v：76 项全部通过，包含网页生成、状态恢复和微信 / Bark 的本地 HTTP 集成回归。
+- python -X utf8 -m compileall -q steam_daily tests：通过；本地 Python 3.14，未运行 Actions 的 Python 3.12 环境。
+- IDEA MCP 构建成功，steam_daily/steam.py 和 tests/test_steam.py 的错误检查为空。
+- git diff --check：通过；Git 仅提示 Windows 换行转换。
+- 已确认生产代码不再引用 ScanChanged 或整轮重扫分支；历史记录保留原描述。
+
+使用模拟 Steam 分页响应和本地 HTTP 测试，未执行真实 Steam 全站采集、真实通知发送或远程部署。未提交或推送；上传默认分支后才会影响 GitHub Actions。动态分页不是同一时刻的完整快照，数量不变时的目录移动也可能无法检测。
+
 ## 2026-10-14：新增 iPhone Bark 推送
 
 任务分类：Small Feature。配置 BARK_DEVICE_KEY 后发送普通 Bark 通知，点击打开带日报日期的完整优惠网页。支持微信和 Bark 同时启用，也支持只配置 Bark。两个渠道独立记录发送状态，一方投递失败仍尝试另一方，先发布和核验网页的顺序保持一致。

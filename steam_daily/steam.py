@@ -11,10 +11,6 @@ from .http import FetchError
 SEARCH_URL = 'https://store.steampowered.com/search/results/?'
 
 
-class ScanChanged(FetchError):
-    pass
-
-
 class Node:
     def __init__(self, tag='', attrs=None):
         self.tag = tag
@@ -209,6 +205,7 @@ def collect_search(http, config):
     total = None
     offers = {}
     duplicates = 0
+    total_changes = 0
     for page in range(config['max_pages']):
         query = {
             'start': start, 'count': config['page_size'], 'specials': 1, 'infinite': 1,
@@ -218,49 +215,53 @@ def collect_search(http, config):
         data = http.json(SEARCH_URL + urlencode(query))
         if not isinstance(data, dict) or data.get('success') != 1:
             raise FetchError('Steam search did not report success')
-        if not isinstance(data.get('total_count'), int) or data['total_count'] < 0:
+        if type(data.get('total_count')) is not int or data['total_count'] < 0:
             raise FetchError('Steam search total missing or invalid')
         if data.get('start') != start:
             raise FetchError('Steam returned the wrong search offset')
-        if total is None:
-            total = data['total_count']
-        elif total != data['total_count']:
-            raise ScanChanged(f'Steam result count changed during scan ({total} to {data["total_count"]})')
+        if total is not None and total != data['total_count']:
+            total_changes += 1
+            print(f'Steam result count changed ({total} to {data["total_count"]}); continuing the single scan.',
+                  flush=True)
+        total = data['total_count']
         rows = parse_search(data.get('results_html', ''))
-        if total == 0:
-            if rows:
-                raise FetchError('Steam returned rows for an empty result set')
-            return [], {'total': 0, 'pages': 1, 'unpriced': 0}
-        if not rows or len(rows) > config['page_size']:
+        if len(rows) > config['page_size']:
             raise FetchError('Steam pagination incomplete or page size changed')
+        if not rows:
+            # A shrinking catalog can move its end before this requested offset.
+            if start >= total:
+                break
+            raise FetchError('Steam pagination incomplete or page size changed')
+        if total == 0:
+            raise FetchError('Steam returned rows for an empty result set')
         for offer in rows:
             if offer.key in offers:
                 duplicates += 1
             offers[offer.key] = offer
+        # Advance by returned rows, including duplicates, so offsets never repeat.
         start += len(rows)
         print(f'Steam scan: {start}/{total} rows', flush=True)
         if start >= total:
-            if start != total or duplicates:
-                raise ScanChanged('Steam pagination had duplicate/missing rows')
-            return list(offers.values()), {'total': total, 'pages': page + 1,
-                                         'unpriced': sum(not item.priced for item in offers.values())}
-        time.sleep(config['request_gap_seconds'])
-    raise FetchError('Search exceeded max_pages; no incomplete digest will be sent')
+            break
+        if page + 1 < config['max_pages']:
+            time.sleep(config['request_gap_seconds'])
+    else:
+        raise FetchError('Search exceeded max_pages; no incomplete digest will be sent')
+    stats = {'total': len(offers), 'pages': page + 1,
+             'unpriced': sum(not item.priced for item in offers.values()),
+             'reported_total': total, 'total_changes': total_changes, 'duplicates': duplicates}
+    print(f'Steam scan complete: {len(offers)} unique items, {duplicates} duplicate rows merged, '
+          f'{total_changes} total changes; single scan only.', flush=True)
+    return list(offers.values()), stats
 
 
 def collect(http, config):
-    # The specials catalog shifts under an in-flight scan; restart up to twice.
-    for attempt in range(3):
-        try:
-            offers, stats = collect_search(http, config)
-            break
-        except ScanChanged:
-            if attempt == 2:
-                raise
-            time.sleep(30)
-            print(f'Steam results changed; restarting the complete scan (attempt {attempt + 2} of 3).', flush=True)
+    offers, stats = collect_search(http, config)
     now = datetime.now(timezone.utc)
     freebies, discounts, warnings = [], [], []
+    if stats['total_changes'] or stats['duplicates']:
+        warnings.append('采集期间优惠列表发生变化，已合并重复商品；'
+                        '期间新增或移动的商品可能遗漏，价格和领取条件以 Steam 商品页为准。')
     if stats['unpriced']:
         warnings.append(f'{stats["unpriced"]} 项商品未公开国区售价，未列入优惠名单。')
     for offer in offers:
